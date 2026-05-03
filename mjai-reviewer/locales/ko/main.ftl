@@ -2,6 +2,7 @@ action-chii = 치
 action-chiicut = 치, 넘기기
 action-discard = 타
 action-kan = 깡
+action-nukidora = 누키도라
 action-skip = 스킵
 action-pon = 퐁
 action-poncut = 퐁, 넘기기

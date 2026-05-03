@@ -2,6 +2,7 @@ action-chii = 吃
 action-chiicut = 吃、打
 action-discard = 打
 action-kan = 杠
+action-nukidora = 拔北
 action-skip = 跳过
 action-pon = 碰
 action-poncut = 碰、打

@@ -71,6 +71,9 @@
   {%- elif action.type == "ankan" -%}
     {{- fluent(key = "action-kan") }}
     {{ self::render_tile(tile=action.consumed[0]) }}
+  {%- elif action.type == "nukidora" -%}
+    {{- fluent(key = "action-nukidora") }}
+    {{ self::render_tile(tile=action.pai) }}
   {%- elif action.type == "ryukyoku" -%}
     {{- fluent(key = "action-ryuukyoku") -}}
   {%- endif -%}

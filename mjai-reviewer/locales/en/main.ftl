@@ -2,6 +2,7 @@ action-chii = Chii
 action-chiicut = Chii, cut
 action-discard = Discard
 action-kan = Kan
+action-nukidora = Nukidora
 action-skip = Skip
 action-pon = Pon
 action-poncut = Pon, cut

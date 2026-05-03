@@ -2,6 +2,7 @@ action-chii = チー
 action-chiicut = チー、打
 action-discard = 打
 action-kan = カン
+action-nukidora = 北抜き
 action-skip = スルー
 action-pon = ポン
 action-poncut = ポン、打
