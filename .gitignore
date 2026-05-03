@@ -1,0 +1,41 @@
+# ── Runtime data (never commit) ──────────────────────────────────────────────
+models/
+data/
+runs/
+tenhou_gz/
+tenhou_json/
+
+# MahjongCopilot runtime state
+MahjongCopilot/browser_data/
+MahjongCopilot/log/
+MahjongCopilot/mitm_config/
+MahjongCopilot/temp/
+MahjongCopilot/settings.json
+
+# ── Build artifacts ───────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pth
+*.pyd
+*.so
+*.dll
+
+# Rust build output
+target/
+
+# Python packaging
+*.egg-info/
+dist/
+build/
+
+# PyInstaller
+*.spec.bak
+
+# ── Editor / OS ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ── Mortal training (gitignored locally in Mortal/mortal/) ───────────────────
+Mortal/mortal/config.toml

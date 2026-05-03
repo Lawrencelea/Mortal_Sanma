@@ -1,0 +1,134 @@
+# Configuration for 3-player (sanma) training with version 5.
+# Paths are relative to Mortal/mortal/ (the working directory when running train.py).
+
+[control]
+version = 5
+online = false
+
+state_file = '../../models/mortal_sanma.pth'
+best_state_file = '../../models/best_sanma.pth'
+tensorboard_dir = '../../runs/sanma'
+
+device = 'cpu'
+enable_cudnn_benchmark = false
+enable_amp = false
+enable_compile = false
+
+batch_size = 256
+opt_step_every = 1
+
+save_every = 400
+test_every = 20000
+submit_every = 400
+
+[dataset]
+globs = ['../../data/*.jsonl']
+file_index = '../../models/file_index_sanma.pth'
+file_batch_size = 15
+reserve_ratio = 0.0
+num_workers = 1
+player_names_files = []
+num_epochs = 1
+enable_augmentation = false
+augmented_first = false
+
+[env]
+gamma = 1
+# sanma point system: 1st/2nd/3rd
+pts = [6.0, 0.0, -6.0]
+
+[resnet]
+conv_channels = 192
+num_blocks = 40
+
+[cql]
+min_q_weight = 5
+
+[aux]
+next_rank_weight = 0.2
+
+[freeze_bn]
+mortal = false
+
+[optim]
+eps = 1e-8
+betas = [0.9, 0.999]
+weight_decay = 0.1
+max_grad_norm = 0
+
+[optim.scheduler]
+peak = 1e-4
+final = 1e-4
+warm_up_steps = 0
+max_steps = 0
+
+[grp]
+state_file = '../../models/grp_sanma.pth'
+
+[grp.network]
+hidden_size = 64
+num_layers = 2
+
+[grp.control]
+num_players = 3
+device = 'cpu'
+enable_cudnn_benchmark = false
+tensorboard_dir = '../../runs/grp_sanma'
+
+batch_size = 512
+save_every = 2000
+val_steps = 400
+
+[grp.dataset]
+train_globs = ['../../data/*.jsonl']
+val_globs = []
+val_ratio = 0.05
+file_index = '../../models/grp_file_index_sanma.pth'
+file_batch_size = 50
+
+[grp.optim]
+lr = 1e-5
+
+[online]
+# Set control.online = true to enable online self-play training.
+# Run server.py, one or more client.py workers, and train.py simultaneously.
+enable_compile = false
+history_window = 20        # moving-average window for client rank logging
+rank_pts = [6, 0, -6]     # points awarded for 1st/2nd/3rd
+
+[online.remote]
+host = '127.0.0.1'
+port = 4396
+
+[online.server]
+buffer_dir = '../../models/online_buffer'
+drain_dir = '../../models/online_drain'
+capacity = 500             # max games buffered before back-pressuring clients
+force_sequential = false
+
+[1v2]
+games_per_iter = 12
+iters = 1
+rank_pts = [6, 0, -6]
+log_dir = '../../models/1v2_logs'
+
+[1v2.challenger]
+state_file = '../../models/mortal_sanma.pth'
+device = 'cpu'
+enable_amp = false
+enable_compile = false
+enable_rule_based_agari_guard = false
+name = 'challenger'
+
+[1v2.champion]
+state_file = '../../models/mortal_sanma.pth'
+device = 'cpu'
+enable_amp = false
+enable_compile = false
+enable_rule_based_agari_guard = false
+name = 'champion'
+
+[1v2.akochan]
+enabled = false
+dir = ''
+tactics = ''
