@@ -3,6 +3,7 @@ import prelude
 import os
 import sys
 import json
+import numpy as np
 import torch
 from datetime import datetime, timezone
 from model import Brain, DQN, GRP
@@ -75,7 +76,7 @@ def main():
         ins = Grp.load_log('\n'.join(logs))
         feature = ins.take_feature()
         seq = list(map(
-            lambda idx: torch.as_tensor(feature[:idx+1], device=device),
+            lambda idx: torch.as_tensor(np.asarray(feature[:idx+1], dtype=np.float64), device=device),
             range(len(feature)),
         ))
 

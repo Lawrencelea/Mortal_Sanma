@@ -129,6 +129,7 @@ class TrainPlayer:
             top_p = self.top_p,
             device = device,
             enable_amp = True,
+            enable_rule_based_agari_guard = True,
             name = 'trainee',
         )
 

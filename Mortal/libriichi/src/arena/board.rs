@@ -70,7 +70,7 @@ pub struct BoardState {
     riichi_to_be_accepted: Option<u8>,
     #[derivative(Default(value = "[true; 3]"))]
     can_nagashi_mangan: [bool; 3],
-    #[derivative(Default(value = "true"))]
+    // 四風連打 does not exist in 3-player mahjong
     can_four_wind: bool,
     four_wind_tile: Option<Tile>,
     accepted_riichis: u8,
@@ -314,30 +314,6 @@ impl BoardState {
     }
 
     fn check_four_wind(&mut self, pai: Tile) -> Result<bool> {
-        if !matches_tu8!(pai.as_u8(), E | S | W | N) {
-            self.can_four_wind = false;
-        } else if self.player_states[self.tsumo_actor as usize].can_w_riichi() {
-            if let Some(tile) = self.four_wind_tile {
-                // compare if the tile is equal to the first
-                // wind
-                self.can_four_wind = tile == pai;
-            } else {
-                // the very first discard and it is a wind,
-                // record the wind
-                self.four_wind_tile = Some(pai);
-            }
-        } else if let Some(tile) = self.four_wind_tile {
-            // check if the first jun is just over and the last
-            // discarded wind is still the same as the previous
-            if tile == pai {
-                return Ok(true);
-            }
-            // do not bother checking it again
-            self.can_four_wind = false;
-        } else {
-            bail!("unexpected state when calculating 四風連打");
-        }
-
         Ok(false)
     }
 
@@ -387,8 +363,14 @@ impl BoardState {
             .map(|ev| match ev.event {
                 Event::Hora { actor, .. } => {
                     self.can_renchan |= actor == self.oya;
-                    let point =
-                        self.player_states[actor as usize].agari_points(is_ron, &ura_indicators);
+                    let point = self.player_states[actor as usize]
+                        .agari_points(is_ron, &ura_indicators)
+                        .with_context(|| {
+                            format!(
+                                "failed to score Hora actor={actor} target={single_target} is_ron={is_ron}\nreaction: {ev:?}\nstate:\n{}",
+                                self.player_states[actor as usize].brief_info()
+                            )
+                        });
                     Some(point).transpose()
                 }
                 _ => Ok(None),
@@ -600,12 +582,6 @@ impl BoardState {
                 self.broadcast(&ev.event);
                 self.add_log(ev.clone());
                 self.tsumo_actor = (actor + 1) % 3;
-
-                // 四風連打
-                if self.can_four_wind && self.check_four_wind(pai)? {
-                    self.abortive_ryukyoku();
-                    return Ok(Poll::End);
-                }
 
                 if self.kans == 4 && self.player_states.iter().all(|s| s.kans_count() < 4) {
                     // 四槓散了

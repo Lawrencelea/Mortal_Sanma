@@ -136,7 +136,7 @@ MJAI_MASK_LIST_3P = [
     "1s", "2s", "3s", "4s", "5s", "6s", "7s", "8s", "9s",
     "E",  "S",  "W",  "N",  "P",  "F",  "C",
     '5mr', '5pr', '5sr',
-    'reach', 'chi_low', 'chi_mid', 'chi_high', 'pon', 'kan_select', 'hora', 'ryukyoku', 'none'
+    'reach', 'nukidora', 'pon', 'kan_select', 'hora', 'ryukyoku', 'none'
 ]
 
 MJAI_TILES_34 = [
@@ -222,12 +222,14 @@ def meta_to_options(meta: dict, is_3p:bool=False) -> list:
     
     q_values = meta['q_values']
     mask_bits = meta['mask_bits']
-    mask = mask_bits_to_bool_list(mask_bits)
+    n = len(mask_list)
+    binary_string = bin(mask_bits)[2:].zfill(n)
+    mask = [bit == '1' for bit in binary_string[::-1]]
     weight_values = softmax(q_values)
-    
+
     q_value_idx = 0
     option_list = []
-    for i in range(46):
+    for i in range(n):
         if mask[i]:
             option_list.append((mask_list[i], weight_values[q_value_idx]))
             q_value_idx += 1

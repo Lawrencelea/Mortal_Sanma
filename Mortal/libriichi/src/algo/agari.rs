@@ -875,9 +875,11 @@ pub fn check_ankan_after_riichi(tehai: &[u8; 34], len_div3: u8, tile: Tile, stri
             shanten::calc_all(&tmp, len_div3) == -1
         })
         .all(|wait| {
-            // Cannot kan a waited tile
+            // Cannot kan a waited tile. If all four copies are already in
+            // hand, Tenhou still allows the riichi ankan because the kan tile
+            // itself is no longer an effective wait.
             if wait == tile_id {
-                return false;
+                return tehai[tile_id] == 4;
             }
 
             // Test if the hand after ankan can also win with the wait tile
@@ -933,6 +935,7 @@ mod test {
         test_one("12345m 567s 11222z", "S", 4, true, true);
         test_one("12345m 444567s 11z", "4s", 4, true, true);
         test_one("22m 11112356p 444s", "4s", 4, true, true);
+        test_one("12305567888s 55z", "8s", 4, false, true);
 
         // Always negative
         test_one("123456m 4445s 111z", "4s", 4, true, false);

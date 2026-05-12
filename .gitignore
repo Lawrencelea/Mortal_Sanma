@@ -36,6 +36,3 @@ build/
 Thumbs.db
 .vscode/
 .idea/
-
-# ── Mortal training (gitignored locally in Mortal/mortal/) ───────────────────
-Mortal/mortal/config.toml

@@ -660,6 +660,11 @@ struct SanmaReplayState<'a> {
     riichi_accepted: [bool; 3],
     temporary_furiten: [bool; 3],
     riichi_furiten: [bool; 3],
+    // Branch-pruning guard for Tenhou sanma's ambiguous per-player streams.
+    // A branch that makes the eventual winner pass a kakan/nukidora ron window
+    // can later clear temporary furiten by drawing, but it is usually the wrong
+    // chronology when Tenhou's result is an ordinary ron.
+    passed_special_ron: [bool; 3],
     failed_states: Rc<RefCell<AHashSet<SanmaReplayKey>>>,
     steps: usize,
 }
@@ -679,6 +684,7 @@ struct SanmaReplayKey {
     riichi_accepted: [bool; 3],
     temporary_furiten: [bool; 3],
     riichi_furiten: [bool; 3],
+    passed_special_ron: [bool; 3],
     discarded_tiles: [[bool; 34]; 3],
 }
 
@@ -764,6 +770,7 @@ fn tenhou_sanma_kyoku_to_mjai_events(
         riichi_accepted: [false; 3],
         temporary_furiten: [false; 3],
         riichi_furiten: [false; 3],
+        passed_special_ron: [false; 3],
         failed_states: Rc::new(RefCell::new(AHashSet::new())),
         steps: 0,
     };
@@ -943,6 +950,7 @@ impl SanmaReplayState<'_> {
             riichi_accepted: self.riichi_accepted,
             temporary_furiten: self.temporary_furiten,
             riichi_furiten: self.riichi_furiten,
+            passed_special_ron: self.passed_special_ron,
             discarded_tiles: [
                 self.discarded_tiles[0],
                 self.discarded_tiles[1],
@@ -1019,6 +1027,7 @@ impl SanmaReplayState<'_> {
                     end_kyoku(&mut self.events, self.kyoku);
                     return Ok(self.events);
                 }
+                self.mark_passed_special_ron_opportunities(pai);
                 self.need_new_dora_at_discard = true;
                 run_sanma_replay(self)
             }
@@ -1031,6 +1040,7 @@ impl SanmaReplayState<'_> {
                     end_kyoku(&mut self.events, self.kyoku);
                     return Ok(self.events);
                 }
+                self.mark_passed_special_ron_opportunities(pai);
                 run_sanma_replay(self)
             }
             _ => Err(unexpected_state_error(&self, discard)),
@@ -1068,9 +1078,12 @@ impl SanmaReplayState<'_> {
         }
 
         let call_candidates = self.call_candidates();
+        let has_future_same_discard = self.has_future_discard(self.last_discard);
         let (retarget_now, retarget_deferred): (Vec<_>, Vec<_>) =
             call_candidates.iter().copied().partition(|candidate| {
-                candidate.direct_target
+                (candidate.direct_target
+                    && !(has_future_same_discard
+                        && is_ron_target(self.kyoku, candidate.actor as u8)))
                     || !self.has_callable_future_discard_from(
                         candidate.original_target,
                         self.last_discard,
@@ -1251,16 +1264,44 @@ impl SanmaReplayState<'_> {
         match &self.kyoku.end_status {
             EndStatus::Hora { details } => details.iter().any(|detail| {
                 let who = detail.who as usize;
-                who != candidate.actor
-                    && self.riichi_accepted[who]
-                    && is_complete_hand_shape_with_win_tile(
-                        &self.hand_counts[who],
-                        *pai,
-                        self.meld_counts[who],
-                    )
+                let target = detail.target as usize;
+                // Tsumo wins have who == target; nothing to order around.
+                if who == target {
+                    return false;
+                }
+                // Candidate is the winner or the target — not a bystander.
+                if candidate.actor == who || candidate.actor == target {
+                    return false;
+                }
+                // Bystander's discard must be the winning tile and the winner
+                // must actually be able to win on it.
+                if !is_complete_hand_shape_with_win_tile(
+                    &self.hand_counts[who],
+                    *pai,
+                    self.meld_counts[who],
+                ) {
+                    return false;
+                }
+                // Riichi winner: always deprioritise a bystander discard of the
+                // winning tile (the classic missed-ron guard).
+                if self.riichi_accepted[who] {
+                    return true;
+                }
+                // Non-riichi winner: deprioritise only when the real target still
+                // has the winning tile in their future discard stream, i.e. this
+                // bystander discard is a phantom trailing turn recorded after the
+                // ron already fired.
+                self.has_future_discard_for_actor(target, *pai)
             }),
             EndStatus::Ryukyoku { .. } => false,
         }
+    }
+
+    fn has_future_discard_for_actor(&self, actor: usize, pai: Tile) -> bool {
+        self.discard_events[actor]
+            .iter()
+            .skip(self.discard_idxs[actor])
+            .any(|event| matches!(event, Event::Dahai { pai: p, .. } if *p == pai))
     }
 
     fn has_future_discard(&self, pai: Tile) -> bool {
@@ -1336,6 +1377,29 @@ impl SanmaReplayState<'_> {
         }
     }
 
+    fn mark_passed_special_ron_opportunities(&mut self, win_tile: Tile) {
+        for actor in 0..3 {
+            if actor == self.actor {
+                continue;
+            }
+            if self.riichi_furiten[actor] || self.temporary_furiten[actor] {
+                continue;
+            }
+            if is_complete_hand_shape_with_win_tile(
+                &self.hand_counts[actor],
+                win_tile,
+                self.meld_counts[actor],
+            ) {
+                if self.riichi_accepted[actor] {
+                    self.riichi_furiten[actor] = true;
+                } else {
+                    self.temporary_furiten[actor] = true;
+                }
+                self.passed_special_ron[actor] = true;
+            }
+        }
+    }
+
     fn ron_moment_blocked_by_furiten(
         &self,
         target_actor: usize,
@@ -1356,6 +1420,7 @@ impl SanmaReplayState<'_> {
                         || !self.result_yaku_shape_compatible(detail, win_tile)
                         || self.is_furiten_by_own_discards(who)
                         || self.riichi_furiten[who]
+                        || block_temporary_furiten && self.passed_special_ron[who]
                         || block_temporary_furiten && self.temporary_furiten[who]
                 }),
             EndStatus::Ryukyoku { .. } => false,
@@ -1418,11 +1483,21 @@ impl SanmaReplayState<'_> {
 
     fn can_end_without_discard(&self) -> bool {
         match &self.kyoku.end_status {
-            EndStatus::Hora { details } => details
-                .iter()
-                .any(|detail| detail.who == self.actor as u8 && detail.target == detail.who),
+            EndStatus::Hora { details } => details.iter().any(|detail| {
+                detail.who == self.actor as u8
+                    && detail.target == detail.who
+                    && self.result_tsumo_yaku_timing_compatible(detail)
+            }),
             EndStatus::Ryukyoku { .. } => true,
         }
+    }
+
+    fn result_tsumo_yaku_timing_compatible(&self, detail: &crate::tenhou::HoraDetail) -> bool {
+        if detail.yaku.iter().any(|yaku| yaku.contains("海底")) && self.live_wall_left != 0 {
+            return false;
+        }
+
+        true
     }
 
     fn is_ron_moment(&self, target_actor: usize) -> bool {
@@ -1471,7 +1546,16 @@ impl SanmaReplayState<'_> {
                 };
                 discard_idx += 1;
                 match discard {
-                    Event::Dahai { .. } => break,
+                    // Only a tsumogiri dahai is a phantom turn — the player had no
+                    // real choice (they drew and immediately discarded the same tile).
+                    // A non-tsumogiri dahai is a genuine decision that changes game
+                    // state, so the winner's remaining stream is not purely phantom.
+                    Event::Dahai {
+                        tsumogiri: true, ..
+                    } => break,
+                    Event::Dahai {
+                        tsumogiri: false, ..
+                    } => return false,
                     Event::Nukidora { .. } => continue,
                     Event::Reach { .. } | Event::Ankan { .. } | Event::Kakan { .. } => {
                         return false;
@@ -2267,11 +2351,14 @@ const fn relative_target(actor: u8, num_players: usize, naki_marker_idx: usize) 
         (4, 0) => (actor + 3) % 4,
         (4, 2) => (actor + 2) % 4,
         (4, 4 | 6) => (actor + 1) % 4,
-        // Sanma has no kamicha seat, but Tenhou still uses the same compact
-        // meld-string forms. Indices before the called tile map to the previous
-        // actor in turn order; indices after it map to the next actor.
+        // Sanma has no N seat, but Tenhou still uses the same compact meld-string
+        // forms. Index 0 calls from kamicha (W for E, etc.). Index 2 preserves
+        // the 4-player toimen formula: (actor+2)%4, which maps E↔W and leaves S
+        // unreachable (sanma never generates idx=2 for S). Index 4/6 calls from
+        // shimocha.
         (3, 0) => (actor + 2) % 3,
-        (3, 2 | 4 | 6) => (actor + 1) % 3,
+        (3, 2) => (actor + 2) % 4,
+        (3, 4 | 6) => (actor + 1) % 3,
         _ => actor,
     }
 }
@@ -2377,5 +2464,69 @@ fn validate_sanma_tile(tile: Tile) -> Result<()> {
     match tile.as_u8() {
         1..=7 | 34 => Err(ConvertError::InvalidSanmaTile(tile)),
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tenhou::{HoraDetail, KyokuMeta};
+
+    fn sanma_replay_state_for_tsumo_yaku(live_wall_left: u8) -> SanmaReplayState<'static> {
+        let kyoku = Box::leak(Box::new(Kyoku {
+            meta: KyokuMeta {
+                kyoku_num: 0,
+                honba: 0,
+                kyotaku: 0,
+            },
+            scoreboard: vec![35000, 35000, 35000],
+            dora_indicators: vec![t!(1p)],
+            ura_indicators: vec![],
+            action_tables: vec![],
+            end_status: EndStatus::Ryukyoku {
+                score_deltas: vec![0, 0, 0],
+            },
+        }));
+        let take_events = Box::leak(Box::new([Vec::new(), Vec::new(), Vec::new()]));
+        let discard_events = Box::leak(Box::new([Vec::new(), Vec::new(), Vec::new()]));
+
+        SanmaReplayState {
+            kyoku,
+            take_events,
+            discard_events,
+            events: vec![],
+            dora_idx: 1,
+            take_idxs: vec![0; 3],
+            discard_idxs: vec![0; 3],
+            hand_counts: vec![[0; 38]; 3],
+            meld_counts: vec![0; 3],
+            discarded_tiles: vec![[false; 34]; 3],
+            actor: 0,
+            live_wall_left,
+            reach_flag: None,
+            last_discard: t!(?),
+            last_actor: None,
+            need_new_dora_at_discard: false,
+            need_new_dora_at_tsumo: false,
+            riichi_accepted: [false; 3],
+            temporary_furiten: [false; 3],
+            riichi_furiten: [false; 3],
+            passed_special_ron: [false; 3],
+            failed_states: Rc::new(RefCell::new(AHashSet::new())),
+            steps: 0,
+        }
+    }
+
+    #[test]
+    fn sanma_tsumo_haitei_must_consume_live_wall() {
+        let detail = HoraDetail {
+            who: 0,
+            target: 0,
+            score_deltas: vec![1500, -700, -700],
+            yaku: vec!["海底摸月(1飜)".to_owned()],
+        };
+
+        assert!(!sanma_replay_state_for_tsumo_yaku(1).result_tsumo_yaku_timing_compatible(&detail));
+        assert!(sanma_replay_state_for_tsumo_yaku(0).result_tsumo_yaku_timing_compatible(&detail));
     }
 }

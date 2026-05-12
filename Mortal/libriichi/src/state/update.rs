@@ -342,7 +342,7 @@ impl PlayerState {
             // Tenhou sanma allows ron on a kita/nuki-dora declaration, much
             // like chankan on kakan. It does not, however, award the chankan
             // han; this only opens the ron window.
-            if self.can_ron_on_special_tile(pai) {
+            if self.can_ron_on_nukidora_tile(pai) {
                 self.last_cans.can_ron_agari = true;
                 self.to_mark_same_cycle_furiten = Some(pai);
                 self.nukidora_ron_chance = Some(());
@@ -769,10 +769,13 @@ impl PlayerState {
         self.kyotaku += 1;
         self.update_rank();
         if actor_rel == 0 {
-            // Tenhou sanma treats nuki as call-like for ippatsu. If any
-            // nukidora has already occurred in this hand, a later riichi does
-            // not start an ippatsu window.
-            self.at_ippatsu = !self.nukidora_seen;
+            let sanma_prior_call_seen = self.scores[3] == 0
+                && (self.fuuro_overview.iter().any(|fuuro| !fuuro.is_empty())
+                    || self.ankan_overview.iter().any(|ankan| !ankan.is_empty()));
+            // Tenhou sanma treats prior calls/nuki as ippatsu blockers: if one
+            // has already occurred in the hand, a later riichi does not start
+            // an ippatsu window.
+            self.at_ippatsu = !self.nukidora_seen && !sanma_prior_call_seen;
         }
     }
 
@@ -1051,6 +1054,36 @@ impl PlayerState {
         // furiten from a passed discard does not close this window, while
         // permanent furiten still does.
         (!self.at_furiten || self.same_cycle_furiten) && self.waits[pai.deaka().as_usize()]
+    }
+
+    fn can_ron_on_nukidora_tile(&self, pai: Tile) -> bool {
+        if !self.can_ron_on_special_tile(pai) {
+            return false;
+        }
+
+        // Unlike chankan, ron on a nuki-dora declaration does not itself award
+        // a yaku. Do the same scoreability check as ordinary ron so a no-yaku
+        // tenpai cannot produce a Hora that later fails point calculation.
+        if self.riichi_accepted[0] || self.is_w_riichi || self.at_ippatsu || self.tiles_left == 0 {
+            return true;
+        }
+
+        let mut tehai_with_winning_tile = self.tehai;
+        tehai_with_winning_tile[pai.deaka().as_usize()] += 1;
+
+        let agari_calc = AgariCalculator {
+            tehai: &tehai_with_winning_tile,
+            is_menzen: self.is_menzen,
+            chis: &self.chis,
+            pons: &self.pons,
+            minkans: &self.minkans,
+            ankans: &self.ankans,
+            bakaze: self.bakaze.as_u8(),
+            jikaze: self.jikaze.as_u8(),
+            winning_tile: pai.deaka().as_u8(),
+            is_ron: true,
+        };
+        agari_calc.has_yaku()
     }
 
     pub(super) const fn update_doras_owned(&mut self, actor_rel: usize, tile: Tile) {

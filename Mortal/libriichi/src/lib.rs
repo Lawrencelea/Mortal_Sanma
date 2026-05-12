@@ -134,7 +134,6 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// - mjai interface (via `mjai.Bot`).
 #[pymodule]
 fn libriichi(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    pyo3_log::init();
     algo::shanten::ensure_init();
     algo::agari::ensure_init();
 

@@ -1,6 +1,7 @@
 import prelude
 
 import random
+import numpy as np
 import torch
 import logging
 from os import path
@@ -54,7 +55,7 @@ class GrpFileDatasetsIter(IterableDataset):
             rank_by_player = game.take_rank_by_player()
 
             for i in range(feature.shape[0]):
-                inputs_seq = torch.as_tensor(feature[:i + 1], dtype=torch.float64)
+                inputs_seq = torch.as_tensor(np.asarray(feature[:i + 1], dtype=np.float64))
                 self.buffer.append((
                     inputs_seq,
                     rank_by_player,

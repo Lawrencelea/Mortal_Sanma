@@ -7,7 +7,6 @@ from common.utils import list_children
 from common.log_helper import LOGGER
 from common.settings import Settings
 from common.lan_str import LAN_OPTIONS
-from bot import MODEL_TYPE_STRINGS
 from .utils import GUI_STYLE, add_hover_text
 
 class SettingsWindow(tk.Toplevel):
@@ -115,14 +114,6 @@ class SettingsWindow(tk.Toplevel):
         cur_row += 1
         sep = ttk.Separator(main_frame, orient=tk.HORIZONTAL)
         sep.grid(row=cur_row, column=0, columnspan=4, sticky="ew", pady=5)
-        # Select Model Type        
-        cur_row += 1
-        _label = ttk.Label(main_frame, text=self.st.lan().MODEL_TYPE)
-        _label.grid(row=cur_row, column=0, **args_label)
-        self.model_type_var = tk.StringVar(value=self.st.model_type)
-        select_menu = ttk.Combobox(main_frame, textvariable=self.model_type_var, values=MODEL_TYPE_STRINGS, state="readonly", width=std_wid)
-        select_menu.grid(row=cur_row, column=1, **args_entry)
-        
         # Select Model File
         model_files = [""] + list_children(Folder.MODEL)
         cur_row += 1
@@ -138,57 +129,6 @@ class SettingsWindow(tk.Toplevel):
         self.model_file_3p_var = tk.StringVar(value=self.st.model_file_3p)
         select_menu2 = ttk.Combobox(main_frame, textvariable=self.model_file_3p_var, values=model_files, state="readonly", width=std_wid*3)
         select_menu2.grid(row=cur_row, column=1, columnspan=3,  **args_entry)        
-        # Akagi OT
-        cur_row += 1
-        _label = ttk.Label(main_frame, text=self.st.lan().AKAGI_OT_URL)
-        _label.grid(row=cur_row, column=0, **args_label)
-        self.akagiot_url_var = tk.StringVar(value=self.st.akagi_ot_url)
-        string_entry = ttk.Entry(main_frame, textvariable=self.akagiot_url_var, width=std_wid*4)
-        string_entry.grid(row=cur_row, column=1,columnspan=3,  **args_entry)
-        # Akagi OT API Key
-        cur_row += 1
-        _label = ttk.Label(main_frame, text=self.st.lan().AKAGI_OT_APIKEY)
-        _label.grid(row=cur_row, column=0, **args_label)
-        self.akagiot_apikey_var = tk.StringVar(value=self.st.akagi_ot_apikey)
-        string_entry = ttk.Entry(main_frame, textvariable=self.akagiot_apikey_var, width=std_wid*4)
-        string_entry.grid(row=cur_row, column=1,columnspan=3,  **args_entry)        
-        
-        # MJAPI url
-        cur_row += 1
-        _label = ttk.Label(main_frame, text=self.st.lan().MJAPI_URL)
-        _label.grid(row=cur_row, column=0, **args_label)
-        self.mjapi_url_var = tk.StringVar(value=self.st.mjapi_url)
-        string_entry = ttk.Entry(main_frame, textvariable=self.mjapi_url_var, width=std_wid*4)
-        string_entry.grid(row=cur_row, column=1,columnspan=3,  **args_entry)
-        
-        # MJAPI user
-        cur_row += 1
-        _label = ttk.Label(main_frame, text=self.st.lan().MJAPI_USER)
-        _label.grid(row=cur_row, column=0, **args_label)
-        self.mjapi_user_var = tk.StringVar(value=self.st.mjapi_user)
-        string_entry = ttk.Entry(main_frame, textvariable=self.mjapi_user_var, width=std_wid)
-        string_entry.grid(row=cur_row, column=1, **args_entry)   
-        
-        # MJAPI secret
-        cur_row += 1
-        _label = ttk.Label(main_frame, text=self.st.lan().MJAPI_SECRET)
-        _label.grid(row=cur_row, column=0, **args_label)
-        self.mjapi_secret_var = tk.StringVar(value=self.st.mjapi_secret)
-        string_entry = ttk.Entry(main_frame, textvariable=self.mjapi_secret_var,width=std_wid*4)
-        string_entry.grid(row=cur_row, column=1,columnspan=3,  **args_entry)
-        
-        # MJAPI model
-        cur_row += 1
-        _label = ttk.Label(main_frame, text=self.st.lan().MJAPI_MODEL_SELECT)
-        _label.grid(row=cur_row, column=0, **args_label)
-        self.mjapi_model_select_var = tk.StringVar(value=self.st.mjapi_model_select)
-        options = self.st.mjapi_models
-        sel_model = ttk.Combobox(main_frame, textvariable=self.mjapi_model_select_var, values=options, state="readonly", width=std_wid)
-        sel_model.grid(row=cur_row, column=1, **args_entry)
-        
-        _label = ttk.Label(main_frame, text=self.st.lan().LOGIN_TO_REFRESH)
-        _label.grid(row=cur_row, column=2, **args_entry)
-        
         # sep
         cur_row += 1
         sep = ttk.Separator(main_frame, orient=tk.HORIZONTAL)
@@ -287,25 +227,11 @@ class SettingsWindow(tk.Toplevel):
             self.gui_need_reload = False
         
         # models
-        model_type_new = self.model_type_var.get()
         model_file_new = self.model_file_var.get()
         mode_file_3p_new = self.model_file_3p_var.get()
-        akagi_url_new = self.akagiot_url_var.get()
-        akagi_apikey_new = self.akagiot_apikey_var.get()
-        mjapi_url_new = self.mjapi_url_var.get()
-        mjapi_user_new = self.mjapi_user_var.get()
-        mjapi_secret_new = self.mjapi_secret_var.get()
-        mjapi_model_select_new = self.mjapi_model_select_var.get()        
         if (
-            self.st.model_type != model_type_new or
             self.st.model_file != model_file_new or
-            self.st.model_file_3p != mode_file_3p_new or
-            self.st.akagi_ot_url != akagi_url_new or
-            self.st.akagi_ot_apikey != akagi_apikey_new or
-            self.st.mjapi_url != mjapi_url_new or
-            self.st.mjapi_user != mjapi_user_new or
-            self.st.mjapi_secret != mjapi_secret_new or 
-            self.st.mjapi_model_select != mjapi_model_select_new
+            self.st.model_file_3p != mode_file_3p_new
         ):
             self.model_updated = True
         
@@ -332,15 +258,8 @@ class SettingsWindow(tk.Toplevel):
         self.st.language = language_new
         self.st.enable_proxinject = proxy_inject_new
         
-        self.st.model_type = model_type_new
         self.st.model_file = model_file_new
         self.st.model_file_3p = mode_file_3p_new
-        self.st.akagi_ot_url = akagi_url_new
-        self.st.akagi_ot_apikey = akagi_apikey_new
-        self.st.mjapi_url = mjapi_url_new
-        self.st.mjapi_user = mjapi_user_new
-        self.st.mjapi_secret = mjapi_secret_new
-        self.st.mjapi_model_select = mjapi_model_select_new
         
         self.st.auto_idle_move = self.auto_idle_move_var.get()
         self.st.auto_dahai_drag = self.auto_drag_dahai_var.get()

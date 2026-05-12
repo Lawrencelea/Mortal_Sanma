@@ -48,11 +48,11 @@ class MortalEngine:
             return self._react_batch(obs, masks, invisible_obs)
 
     def _react_batch(self, obs, masks, invisible_obs):
-        obs = torch.as_tensor(np.stack(obs, axis=0), device=self.device)
-        masks = torch.as_tensor(np.stack(masks, axis=0), device=self.device)
+        obs = torch.as_tensor(np.asarray(obs, dtype=np.float32), device=self.device)
+        masks = torch.as_tensor(np.asarray(masks, dtype=np.bool_), device=self.device)
         invisible_obs = None
         if self.is_oracle:
-            invisible_obs = torch.as_tensor(np.stack(invisible_obs, axis=0), device=self.device)
+            invisible_obs = torch.as_tensor(np.asarray(invisible_obs, dtype=np.float32), device=self.device)
         batch_size = obs.shape[0]
 
         match self.version:

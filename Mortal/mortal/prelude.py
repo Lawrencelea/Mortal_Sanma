@@ -15,7 +15,7 @@ logging.basicConfig(
 warnings.simplefilter('ignore')
 
 # "The given NumPy array is not writeable"
-dummy = np.array([])
+dummy = np.asarray([], dtype=np.float32)
 dummy.setflags(write=False)
 torch.as_tensor(dummy)
 

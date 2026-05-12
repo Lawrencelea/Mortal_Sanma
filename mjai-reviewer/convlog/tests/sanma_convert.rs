@@ -24,12 +24,24 @@ const SANMA_HOUTEI_BRANCH_LOG: &str =
     include_str!("../../../2025_output/2025060717gm-00b9-0000-5fafbe59.json");
 const SANMA_TANYAO_RON_BRANCH_LOG: &str =
     include_str!("../../../2025_output/2025121618gm-00b9-0000-0bbd79eb.json");
+const SANMA_CFB86147_KYOKU_JSON: &str = r#"[[2,0,0],[29700,30400,44900,0],[26],[],[24,25,28,28,32,34,36,37,39,42,45,47,47],[41,34,45,22,53,35,19,47,37,"37p3737",24,"45p4545"],[39,41,42,60,28,28,32,19,25,24,60,36],[11,21,22,22,23,23,52,27,28,38,39,42,46],[27,36,38,25,26,43,43,11,19,23,19],[11,39,42,46,36,60,60,60,60,60,60],[11,19,22,26,29,34,35,36,39,42,42,43,44],[43,46,29,37,"p424242",35,31,"p434343",31,28,37,45,44,45],["f44",19,11,46,22,26,29,29,39,60,60,60,"f44",60],[],[],[],["和了",[-11600,0,11600,0],[2,0,2,"30符4飜11600点","混一色(2飜)","ドラ(2飜)"]]]"#;
+const SANMA_097ACC2B_KYOKU_JSON: &str = r#"[[2,0,0],[25500,33000,46500,0],[35],[39],[21,22,22,23,23,26,28,29,32,34,42,45,45],[25,37,34,32,"45p4545",27],[34,32,60,60,42,37],[23,24,24,25,26,29,34,36,38,42,43,47,47],[53,31,39,25,32],[42,60,43,"r29",60],[22,27,29,32,33,35,36,37,38,39,42,43,45],[28,31,43,46,45,36],[43,42,60,45,60,46],[],[],[],["和了",[-5200,6200,0,0],[1,0,1,"40符3飜5200点","立直(1飜)","ドラ(1飜)","赤ドラ(1飜)"]]]"#;
+const SANMA_25E9BC69_KYOKU_JSON: &str = r#"[[1,1,0],[51700,25900,27400,0],[42],[28],[11,11,21,26,29,29,37,41,42,42,43,45,45],["2929p29","11p1111",44,32,"4545p45",27,19,47,34],[26,37,"f44",60,21,60,60,60,42],[19,19,22,22,23,24,29,53,36,36,45,46,46],[25,39,28,35,33,34,37,29,21],[29,60,60,45,60,22,"r22",60,60],[11,22,23,23,25,26,26,33,38,38,41,47,47],[28,52,31,36,26,32,19],[11,28,33,60,22,60,60],[],[],[],["和了",[0,5100,-4100,0],[1,2,1,"40符2飜3900点","立直(1飜)","赤ドラ(1飜)"]]]"#;
+const SANMA_6C887319_KYOKU_JSON: &str = r#"[[0,2,0],[47200,35000,22800,0],[23],[44],[21,21,22,26,32,33,33,34,35,38,43,43,46],[22,42,46,29,38,35,28,32],[46,60,60,60,26,34,"r32",60],[11,19,19,22,23,26,26,31,33,34,36,37,43],[39,27,35,25,19,28],[43,31,39,26,60,60],[22,24,24,28,29,29,53,36,36,41,46,46,47],["46p4646",24,45,"29p2929",39,41,26],[41,47,60,28,60,60,60],[],[],[],["和了",[6200,-5200,0,0],[0,1,0,"25符3飜4800点","立直(1飜)","七対子(2飜)"]]]"#;
+const SANMA_525BE759_KAKAN_BRANCH_KYOKU_JSON: &str = r#"[[1,2,0],[34000,42900,28100,0],[29,22],[],[21,26,27,29,29,31,32,33,33,35,37,39,43],[53,33,32,25,24,19,38,45],[43,29,29,21,27,60,33,60],[19,26,29,31,32,32,34,37,41,41,42,42,45],[34,21,28,"3434p34",27,"4141p41",36,37,34,46,39,42],[26,29,60,21,60,19,45,60,"3434k3434",60,60,31],[11,11,21,21,22,23,28,33,43,45,46,47,47],[22,28,34,36,41,35,52,41,28,36],[43,33,60,60,60,60,45,60,46,60],[],[],[],["和了",[4300,-4300,0,0],[0,1,0,"30符3飜3900点","平和(1飜)","一盃口(1飜)","赤ドラ(1飜)"]]]"#;
+// Actor 0 (dealer) waits tanki on 1s with 中 koutsu.  Actor 1 draws and
+// tsumogiri 1s (the real ron discard).  Actor 2 is a bystander whose Tenhou
+// stream records a phantom 1s draw+tsumogiri AFTER the game ended.  Without
+// the fix, the scheduler schedules actor 2's phantom 1s discard first, which
+// sets temporary_furiten on actor 0, and the eventual hora fails validation
+// with "furiten: true".
+const SANMA_525BE759_BYSTANDER_PHANTOM_KYOKU_JSON: &str = r#"[[1,0,0],[35000,35000,35000,0],[47],[],[25,26,27,32,33,34,36,36,36,47,47,47,31],[38],[60],[11,19,29,41,41,42,42,43,43,45,45,46,46],[31],[60],[21,22,23,24,28,29,35,37,38,39,44,45,46],[31],[60],[],[],[],["和了",[5200,-5200,0,0],[0,1,0,"30符3飜5200点","中(1飜)","ドラ(2飜)"]]]"#;
 
 fn convert_raw_log(raw: &str, description: &str) -> Vec<Event> {
     let tenhou_log =
-        Log::from_json_str(raw).unwrap_or_else(|_| panic!("{description} should parse"));
+        Log::from_json_str(raw).unwrap_or_else(|err| panic!("{description} should parse: {err}"));
     assert_eq!(tenhou_log.num_players, 3);
-    tenhou_to_mjai(&tenhou_log).unwrap_or_else(|_| panic!("{description} should convert"))
+    tenhou_to_mjai(&tenhou_log).unwrap_or_else(|err| panic!("{description} should convert: {err}"))
 }
 
 fn convert_template() -> Vec<Event> {
@@ -100,6 +112,13 @@ fn convert_modified_first_kyoku(mut f: impl FnMut(&mut serde_json::Value)) -> Ve
     let tenhou_log =
         Log::from_json_str(&value.to_string()).expect("modified sanma log should parse");
     tenhou_to_mjai(&tenhou_log).expect("modified sanma log should convert")
+}
+
+fn convert_single_kyoku_json(kyoku_json: &str, description: &str) -> Vec<Event> {
+    let mut value: serde_json::Value = serde_json::from_str(SANMA_TEMPLATE).unwrap();
+    value["log"] = serde_json::json!([serde_json::from_str::<serde_json::Value>(kyoku_json)
+        .unwrap_or_else(|_| panic!("{description} kyoku json should parse"))]);
+    convert_raw_log(&value.to_string(), description)
 }
 
 fn event_tiles(event: &Event) -> Vec<Tile> {
@@ -737,146 +756,324 @@ fn sanma_replay_keeps_real_turn_before_riichi_branch() {
 fn sanma_replay_waits_until_houtei_ron_branch() {
     // 2025060717gm-00b9-0000-5fafbe59: the winning ron is on actor 2's final
     // 4s discard; earlier identical call opportunities must be passed.
+    // The correct branch reaches houtei (live-wall empty) with actor 0 drawing
+    // both P and 1p (tsumogiri) before the final tsumo(2,6p)/dahai(2,4s)/hora.
     let events = convert_raw_log(SANMA_HOUTEI_BRANCH_LOG, "sanma houtei branch log");
     let e1_2 = kyoku_slice(&events, t!(E), 1, 2);
 
+    // Final three events: actor 2 draws 6p, discards 4s, actor 1 rons.
     assert!(
-        e1_2.windows(7).any(|window| {
+        e1_2.windows(3).any(|window| {
+            matches!(window[0], Event::Tsumo { actor: 2, pai } if pai == t!(6p))
+                && matches!(
+                    window[1],
+                    Event::Dahai {
+                        actor: 2,
+                        pai,
+                        tsumogiri: false,
+                    } if pai == t!(4s)
+                )
+                && matches!(
+                    window[2],
+                    Event::Hora {
+                        actor: 1,
+                        target: 2,
+                        ..
+                    }
+                )
+        }),
+        "houtei ron branch should not end before the final live-wall discard"
+    );
+
+    // Actor 0's two tsumogiri turns (P and 1p) must both appear before the hora.
+    let hora_pos = e1_2
+        .iter()
+        .rposition(|e| {
             matches!(
-                window[0],
-                Event::Tsumo {
-                    actor: 0,
-                    pai,
-                } if pai == t!(P)
-            ) && matches!(
-                window[1],
-                Event::Dahai {
-                    actor: 0,
-                    pai,
-                    tsumogiri: true,
-                } if pai == t!(P)
-            ) && matches!(
-                window[2],
-                Event::Tsumo {
-                    actor: 0,
-                    pai,
-                } if pai == t!(1p)
-            ) && matches!(
-                window[3],
-                Event::Dahai {
-                    actor: 0,
-                    pai,
-                    tsumogiri: true,
-                } if pai == t!(1p)
-            ) && matches!(
-                window[4],
-                Event::Tsumo {
-                    actor: 2,
-                    pai,
-                } if pai == t!(6p)
-            ) && matches!(
-                window[5],
-                Event::Dahai {
-                    actor: 2,
-                    pai,
-                    tsumogiri: false,
-                } if pai == t!(4s)
-            ) && matches!(
-                window[6],
+                e,
                 Event::Hora {
                     actor: 1,
                     target: 2,
                     ..
                 }
             )
-        }),
-        "houtei ron branch should not end before the final live-wall discard"
+        })
+        .expect("hora should exist");
+    let pre_hora = &e1_2[..hora_pos];
+    assert!(
+        pre_hora
+            .iter()
+            .any(|e| matches!(e, Event::Dahai { actor: 0, pai, tsumogiri: true } if *pai == t!(P))),
+        "actor 0 must tsumogiri P before houtei hora"
+    );
+    assert!(
+        pre_hora.iter().any(
+            |e| matches!(e, Event::Dahai { actor: 0, pai, tsumogiri: true } if *pai == t!(1p))
+        ),
+        "actor 0 must tsumogiri 1p before houtei hora"
     );
 }
 
 #[test]
 fn sanma_replay_keeps_terminal_cleanup_before_tanyao_ron() {
     // 2025121618gm-00b9-0000-0bbd79eb: actor 2 clears a terminal with 4s/1s
-    // and actor 0 has another W/W turn before actor 1's 2s ron discard.
+    // (non-tsumogiri discard) before actor 1's 2s ron discard.
+    // The converter must not omit this real actor-2 turn or reorder it after
+    // the ron moment.
     let events = convert_raw_log(SANMA_TANYAO_RON_BRANCH_LOG, "sanma tanyao ron branch log");
     let e1 = kyoku_slice(&events, t!(E), 1, 0);
 
+    // Actor 2's 4s/1s terminal cleanup leads directly into the final ron sequence:
+    // tsumo(2,4s), dahai(2,1s,false), <actor 0 tsumogiri turn>, tsumo(1,2s),
+    // dahai(1,2s,true), hora(2,target:1).
     assert!(
-        e1.windows(11).any(|window| {
+        e1.windows(7).any(|window| {
+            matches!(window[0], Event::Tsumo { actor: 2, pai } if pai == t!(4s))
+                && matches!(
+                    window[1],
+                    Event::Dahai {
+                        actor: 2,
+                        pai,
+                        tsumogiri: false,
+                    } if pai == t!(1s)
+                )
+                && matches!(window[2], Event::Tsumo { actor: 0, .. })
+                && matches!(
+                    window[3],
+                    Event::Dahai {
+                        actor: 0,
+                        tsumogiri: true,
+                        ..
+                    }
+                )
+                && matches!(window[4], Event::Tsumo { actor: 1, pai } if pai == t!(2s))
+                && matches!(
+                    window[5],
+                    Event::Dahai {
+                        actor: 1,
+                        pai,
+                        tsumogiri: true,
+                    } if pai == t!(2s)
+                )
+                && matches!(
+                    window[6],
+                    Event::Hora {
+                        actor: 2,
+                        target: 1,
+                        ..
+                    }
+                )
+        }),
+        "tanyao ron branch should keep actor 2's real terminal-clearing draw/discard"
+    );
+}
+
+#[test]
+fn sanma_replay_converts_cfb86147_pon_branch() {
+    // 2020041019gm-00b9-0000-cfb86147 E3: the winner's stream contains two
+    // pon calls after nuki-dora entries. A wrong scheduler branch used to end
+    // with `unexpected naki ... expected tile P from Some(2)`.
+    let events =
+        convert_single_kyoku_json(SANMA_CFB86147_KYOKU_JSON, "sanma cfb86147 pon branch log");
+    let s3 = kyoku_slice(&events, t!(E), 3, 0);
+
+    assert!(
+        s3.iter().any(|event| matches!(
+            event,
+            Event::Hora {
+                actor: 2,
+                target: 0,
+                ..
+            }
+        )),
+        "cfb86147 branch should reach actor 2's ron on actor 0"
+    );
+    assert!(
+        s3.iter().any(
+            |event| matches!(event, Event::Pon { actor: 0, target: 2, pai, .. } if *pai == t!(P))
+        ),
+        "actor 0's late P pon must remain attached to actor 2's discard"
+    );
+}
+
+#[test]
+fn sanma_replay_defers_ambiguous_pon_until_after_riichi() {
+    // 2020100401gm-00b9-0000-097acc2b E3: actor 0 has a P pon in their stream,
+    // and actor 2 discards P both before and after actor 1's riichi. The real
+    // pon is the later one; moving it before riichi incorrectly preserves
+    // ippatsu and makes the validator score the ron as 8000 instead of 5200.
+    let events =
+        convert_single_kyoku_json(SANMA_097ACC2B_KYOKU_JSON, "sanma 097acc2b pon branch log");
+    let e3 = kyoku_slice(&events, t!(E), 3, 0);
+
+    let reach_accepted = e3
+        .iter()
+        .position(|event| matches!(event, Event::ReachAccepted { actor: 1 }))
+        .expect("actor 1 riichi should be accepted");
+    let late_pon = e3
+        .iter()
+        .position(|event| {
             matches!(
-                window[0],
-                Event::Tsumo {
-                    actor: 2,
-                    pai,
-                } if pai == t!(1m)
-            ) && matches!(
-                window[1],
-                Event::Dahai {
-                    actor: 2,
-                    pai,
-                    tsumogiri: true,
-                } if pai == t!(1m)
-            ) && matches!(
-                window[2],
-                Event::Tsumo {
+                event,
+                Event::Pon {
                     actor: 0,
+                    target: 2,
                     pai,
-                } if pai == t!(W)
-            ) && matches!(
-                window[3],
-                Event::Dahai {
-                    actor: 0,
-                    pai,
-                    tsumogiri: true,
-                } if pai == t!(W)
-            ) && matches!(
-                window[4],
-                Event::Tsumo {
-                    actor: 2,
-                    pai,
-                } if pai == t!(4s)
-            ) && matches!(
-                window[5],
-                Event::Dahai {
-                    actor: 2,
-                    pai,
-                    tsumogiri: false,
-                } if pai == t!(1s)
-            ) && matches!(
-                window[6],
-                Event::Tsumo {
-                    actor: 0,
-                    pai,
-                } if pai == t!(W)
-            ) && matches!(
-                window[7],
-                Event::Dahai {
-                    actor: 0,
-                    pai,
-                    tsumogiri: true,
-                } if pai == t!(W)
-            ) && matches!(
-                window[8],
-                Event::Tsumo {
-                    actor: 1,
-                    pai,
-                } if pai == t!(2s)
-            ) && matches!(
-                window[9],
-                Event::Dahai {
-                    actor: 1,
-                    pai,
-                    tsumogiri: true,
-                } if pai == t!(2s)
-            ) && matches!(
-                window[10],
+                    ..
+                } if *pai == t!(P)
+            )
+        })
+        .expect("actor 0 should pon actor 2's P");
+    let hora = e3
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
                 Event::Hora {
-                    actor: 2,
+                    actor: 1,
+                    target: 0,
+                    ..
+                }
+            )
+        })
+        .expect("actor 1 should ron actor 0");
+
+    assert!(
+        reach_accepted < late_pon && late_pon < hora,
+        "ambiguous P pon should be attached to the post-riichi discard"
+    );
+    assert!(
+        matches!(
+            e3.get(late_pon - 1),
+            Some(Event::Dahai {
+                actor: 2,
+                pai,
+                tsumogiri: true,
+            }) if *pai == t!(P)
+        ),
+        "late pon should claim actor 2's post-riichi P tsumogiri"
+    );
+}
+
+#[test]
+fn sanma_replay_converts_no_ippatsu_counterexamples() {
+    for (kyoku_json, description, actor, target) in [
+        (
+            SANMA_25E9BC69_KYOKU_JSON,
+            "sanma 25e9bc69 no-ippatsu ron log",
+            1,
+            2,
+        ),
+        (
+            SANMA_6C887319_KYOKU_JSON,
+            "sanma 6c887319 no-ippatsu ron log",
+            0,
+            1,
+        ),
+    ] {
+        let events = convert_single_kyoku_json(kyoku_json, description);
+        let hora = events
+            .iter()
+            .find(|event| matches!(event, Event::Hora { actor: a, target: t, .. } if *a == actor && *t == target))
+            .expect("target ron should convert");
+
+        assert!(
+            matches!(
+                hora,
+                Event::Hora {
+                    deltas: Some(_),
+                    ..
+                }
+            ),
+            "{description} should preserve Tenhou deltas"
+        );
+    }
+}
+
+#[test]
+fn sanma_bystander_phantom_discard_does_not_set_furiten_before_ron() {
+    // 525be759 bug: actor 2 is a bystander whose Tenhou stream has a phantom
+    // 1s draw+tsumogiri recorded after the game ends.  If the scheduler
+    // processes actor 2's 1s discard before actor 1's real 1s discard, it
+    // sets temporary_furiten on actor 0 (who is waiting for 1s).  The fix
+    // deprioritises bystander candidates whose discard tile equals the ron
+    // winning tile when the real target still has that tile in their stream.
+    let events = convert_single_kyoku_json(
+        SANMA_525BE759_BYSTANDER_PHANTOM_KYOKU_JSON,
+        "sanma 525be759 bystander phantom furiten log",
+    );
+
+    let hora_pos = events
+        .iter()
+        .position(|e| {
+            matches!(
+                e,
+                Event::Hora {
+                    actor: 0,
                     target: 1,
                     ..
                 }
             )
-        }),
-        "tanyao ron branch should keep actor 2's real terminal-clearing draw/discard"
+        })
+        .expect("actor 0 should ron actor 1's 1s");
+
+    // Actor 2's phantom 1s discard must NOT appear before the hora.
+    assert!(
+        !events[..hora_pos]
+            .iter()
+            .any(|e| matches!(e, Event::Dahai { actor: 2, pai, .. } if *pai == t!(1s))),
+        "bystander actor 2's phantom 1s discard must not precede actor 0's ron"
+    );
+}
+
+#[test]
+fn sanma_passed_kakan_ron_branch_is_deprioritized() {
+    // 2024100923gm-00b9-0000-525be759: if actor 0 draws 8s before actor 1's
+    // 4s kakan, actor 0 can rob that kan.  Since Tenhou's result is a later
+    // ordinary ron on actor 1's 1s discard, that chronology is the wrong
+    // branch; the kakan must be scheduled before actor 0's 8s draw.
+    let events = convert_single_kyoku_json(
+        SANMA_525BE759_KAKAN_BRANCH_KYOKU_JSON,
+        "sanma 525be759 kakan branch log",
+    );
+
+    let kakan_pos = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                Event::Kakan {
+                    actor: 1,
+                    pai,
+                    ..
+                } if *pai == t!(4s)
+            )
+        })
+        .expect("actor 1 should kakan 4s");
+    let actor0_8s_pos = events
+        .iter()
+        .position(|event| matches!(event, Event::Tsumo { actor: 0, pai } if *pai == t!(8s)))
+        .expect("actor 0 should draw 8s");
+    let hora_pos = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                Event::Hora {
+                    actor: 0,
+                    target: 1,
+                    ..
+                }
+            )
+        })
+        .expect("actor 0 should ron actor 1");
+
+    assert!(
+        kakan_pos < actor0_8s_pos,
+        "actor 1's kakan must precede actor 0's 8s draw"
+    );
+    assert!(
+        actor0_8s_pos < hora_pos,
+        "actor 0's 8s draw is a real turn before the final ron"
     );
 }

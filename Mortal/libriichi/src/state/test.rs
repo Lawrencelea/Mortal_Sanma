@@ -101,6 +101,39 @@ fn waits() {
 }
 
 #[test]
+fn sanma_prior_call_blocks_later_ippatsu_window() {
+    let mut ps = PlayerState::new(0);
+    ps.test_update(&Event::StartKyoku {
+        bakaze: t!(E),
+        dora_marker: t!(3p),
+        kyoku: 1,
+        honba: 0,
+        kyotaku: 0,
+        oya: 0,
+        scores: vec![35000, 35000, 35000, 0],
+        tehais: vec![
+            t![1p, 1p, 2p, 2p, 3p, 3p, 4p, 4p, 5p, 5p, 8p, 8p, F].to_vec(),
+            t![1m, 9m, 2p, 3p, 6p, 6p, 1s, 3s, 4s, 6s, 7s, F, F].to_vec(),
+            t![2p, 4p, 4p, 8p, 9p, 9p, 5sr, 6s, 6s, E, P, F, C].to_vec(),
+        ],
+    });
+    ps.test_update(&Event::Dahai {
+        actor: 0,
+        pai: t!(F),
+        tsumogiri: false,
+    });
+    ps.test_update(&Event::Pon {
+        actor: 1,
+        target: 0,
+        pai: t!(F),
+        consumed: [t!(F), t!(F)],
+    });
+    ps.test_update(&Event::ReachAccepted { actor: 0 });
+
+    assert!(!ps.at_ippatsu);
+}
+
+#[test]
 fn nukidora_replacement_draw_is_rinshan() {
     let ps = PlayerState::from_log(
         1,
@@ -292,6 +325,20 @@ fn nukidora_ron_window_ignores_same_cycle_furiten() {
     );
     assert!(ps.at_furiten);
     assert!(ps.last_cans.can_ron_agari);
+}
+
+#[test]
+fn nukidora_ron_window_rejects_no_yaku_wait() {
+    let ps = PlayerState::from_log(
+        0,
+        r#"
+{"type":"start_kyoku","bakaze":"E","dora_marker":"1p","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[35000,35000,35000],"tehais":[["2p","3p","4p","2s","3s","4s","6s","7s","8s","9s","9s","9s","N"],["1p","1p","2p","3p","4p","5p","6p","7p","8p","1s","2s","3s","N"],["1p","2p","3p","4p","5p","6p","7p","8p","9p","1s","2s","3s","4s"]]}
+{"type":"tsumo","actor":1,"pai":"N"}
+{"type":"nukidora","actor":1,"pai":"N"}
+"#,
+    );
+    assert!(ps.waits[tuz!(N)]);
+    assert!(!ps.last_cans.can_ron_agari);
 }
 
 #[test]

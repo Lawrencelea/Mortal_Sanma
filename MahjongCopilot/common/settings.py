@@ -32,20 +32,8 @@ class Settings:
         self.enable_overlay:bool = self._get_value("enable_overlay", True, self.valid_bool) # not shown
         
         # AI Model settings
-        self.model_type:str = self._get_value("model_type", "Local")
-        """ model type: local, mjapi"""
-        # for local model
         self.model_file:str = self._get_value("model_file", "mortal.pth")
-        self.model_file_3p:str = self._get_value("model_file_3p", "mortal_3p.pth")
-        # akagi ot model
-        self.akagi_ot_url:str = self._get_value("akagi_ot_url", "")
-        self.akagi_ot_apikey:str = self._get_value("akagi_ot_apikey", "")
-        # for mjapi
-        self.mjapi_url:str = self._get_value("mjapi_url", "https://mjai.7xcnnw11phu.eu.org", self.valid_url)
-        self.mjapi_user:str = self._get_value("mjapi_user", "")
-        self.mjapi_secret:str = self._get_value("mjapi_secret", "")
-        self.mjapi_models:list = self._get_value("mjapi_models",[])
-        self.mjapi_model_select:str = self._get_value("mjapi_model_select","baseline")
+        self.model_file_3p:str = self._get_value("model_file_3p", "mortal_sanma.pth")
         
         # Automation settings
         self.enable_automation:bool = self._get_value("enable_automation", False, self.valid_bool)

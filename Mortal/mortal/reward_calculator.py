@@ -13,7 +13,7 @@ class RewardCalculator:
 
     def calc_grp(self, grp_feature):
         seq = list(map(
-            lambda idx: torch.as_tensor(grp_feature[:idx+1], device=self.device),
+            lambda idx: torch.as_tensor(np.asarray(grp_feature[:idx+1], dtype=np.float64), device=self.device),
             range(len(grp_feature)),
         ))
 
