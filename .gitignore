@@ -1,6 +1,6 @@
 # ── Runtime data (never commit) ──────────────────────────────────────────────
 models/
-data/
+/data/
 runs/
 tenhou_gz/
 tenhou_json/
