@@ -236,9 +236,12 @@ impl PlayerState {
 
             // At all-last, we are the last and we are not oya. If even a
             // haneman tsumo cannot let us avoid the last, then do not ryukyoku.
-            let mut scores = [-3000 - self.honba as i32 * 300; 4];
-            scores[0] = 12000 + self.kyotaku as i32 * 1000 + self.honba as i32 * 300;
-            scores[self.oya as usize] = -6000 - self.honba as i32 * 300;
+            //
+            // Tenhou sanma ko tsumo: 3000 from the other ko, 6000 from oya,
+            // plus 100 per honba from each payer.
+            let mut scores = [-3000 - self.honba as i32 * 100; 4];
+            scores[0] = 9000 + self.kyotaku as i32 * 1000 + self.honba as i32 * 200;
+            scores[self.oya as usize] = -6000 - self.honba as i32 * 100;
             vec_add_assign(&mut scores, &self.scores);
             return self.get_rank(scores) < 2;
         }
@@ -276,13 +279,15 @@ impl PlayerState {
             return true;
         }
 
-        if self.bakaze == t!(W) {
-            // Agari if we are in the west round but it is not yet the real
-            // all-last (W4).
-            if self.kyoku < 3 {
-                return true;
-            }
-        } else if self.scores.iter().all(|&s| s < 30000) {
+        // Tenhou sanma game end (verified on the 2025 三鳳南喰赤 corpus): after
+        // S3, and after every W hand, the game ends iff the top player has
+        // at least 40000; otherwise it continues (西入 / sudden death) up to
+        // W3, which is a hard end. So an agari that leaves everyone below
+        // 40000 always keeps the game alive, except at W3.
+        const SANMA_GAME_END_THRESHOLD: i32 = 40000;
+        let is_hard_end = self.bakaze == t!(W) && self.kyoku == 2;
+
+        if !is_hard_end && self.scores.iter().all(|&s| s < SANMA_GAME_END_THRESHOLD) {
             // Agari if 西入 is possible. Note that this condition is sound but
             // not complete.
             return true;
@@ -330,20 +335,26 @@ impl PlayerState {
         };
 
         // Calculate the best post-hora situation for us.
+        //
+        // Tenhou sanma honba: 200 per honba on ron, 100 per honba from each
+        // of the two payers on tsumo (verified on the 2025 corpus).
         let mut exp_scores = self.scores;
         if is_ron {
             exp_scores[0] +=
-                max_win_point.ron + self.kyotaku as i32 * 1000 + self.honba as i32 * 300;
-            exp_scores[target_rel] -= max_win_point.ron + self.honba as i32 * 300;
+                max_win_point.ron + self.kyotaku as i32 * 1000 + self.honba as i32 * 200;
+            exp_scores[target_rel] -= max_win_point.ron + self.honba as i32 * 200;
         } else {
-            // The player must be ko here.
-            exp_scores[0] += max_win_point.tsumo_total(false)
+            // The player must be ko here. In sanma a ko tsumo is paid by one
+            // ko and the oya.
+            exp_scores[0] += max_win_point.tsumo_ko
+                + max_win_point.tsumo_oya
                 + self.kyotaku as i32 * 1000
-                + self.honba as i32 * 300;
+                + self.honba as i32 * 200;
             exp_scores
                 .iter_mut()
                 .enumerate()
                 .skip(1)
+                .take(2)
                 .for_each(|(idx, s)| {
                     if idx as u8 == self.oya {
                         *s -= max_win_point.tsumo_oya + self.honba as i32 * 100;
@@ -353,12 +364,9 @@ impl PlayerState {
                 });
         }
 
-        // The prerequisite `!(self.bakaze == t!(W) && self.kyoku == 2)` has
-        // already been checked at the beginning.
-        //
         // Agari if 西入 or keeping 西入 is possible. This condition is sound
-        // and complete.
-        if exp_scores.iter().all(|&s| s < 30000) {
+        // and complete (W3 is excluded above).
+        if !is_hard_end && exp_scores.iter().all(|&s| s < SANMA_GAME_END_THRESHOLD) {
             return true;
         }
 

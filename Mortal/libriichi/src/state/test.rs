@@ -1791,3 +1791,112 @@ fn chi_at_0_shanten() {
     assert!(ps.at_furiten);
     assert!(!ps.has_next_shanten_discard);
 }
+
+#[test]
+fn sanma_rule_based_agari_uses_40000_game_end_threshold() {
+    // 2025021022gm-00b9-0000-f71f56e7 S3 (oya = 2): actor 0 tsumos 30符4飜
+    // (2000-3900).  The scores are edited below so that actor 0 is the
+    // last-place ko in every case; only whether the game would end after the
+    // hora changes.
+    let log = r#"
+{"type":"start_kyoku","bakaze":"S","dora_marker":"6s","kyoku":3,"honba":0,"kyotaku":0,"oya":2,"scores":[58300,7200,39500],"tehais":[["2p","2p","2p","5p","5pr","6p","6p","7p","9p","3s","5sr","8s","W"],["1p","1p","6p","7p","8p","9p","3s","4s","4s","5s","7s","E","C"],["9m","9m","1p","3p","1s","1s","3s","5s","7s","8s","9s","9s","E"]]}
+{"type":"tsumo","actor":2,"pai":"N"}
+{"type":"nukidora","actor":2,"pai":"N"}
+{"type":"tsumo","actor":2,"pai":"6s"}
+{"type":"dahai","actor":2,"pai":"9s","tsumogiri":false}
+{"type":"tsumo","actor":0,"pai":"8s"}
+{"type":"dahai","actor":0,"pai":"W","tsumogiri":false}
+{"type":"tsumo","actor":1,"pai":"F"}
+{"type":"dahai","actor":1,"pai":"E","tsumogiri":false}
+{"type":"tsumo","actor":2,"pai":"W"}
+{"type":"dahai","actor":2,"pai":"E","tsumogiri":false}
+{"type":"tsumo","actor":0,"pai":"4s"}
+{"type":"dahai","actor":0,"pai":"9p","tsumogiri":false}
+{"type":"tsumo","actor":1,"pai":"4p"}
+{"type":"dahai","actor":1,"pai":"C","tsumogiri":false}
+{"type":"tsumo","actor":2,"pai":"9s"}
+{"type":"dahai","actor":2,"pai":"W","tsumogiri":false}
+{"type":"tsumo","actor":0,"pai":"9p"}
+{"type":"dahai","actor":0,"pai":"9p","tsumogiri":true}
+{"type":"tsumo","actor":1,"pai":"2s"}
+{"type":"dahai","actor":1,"pai":"F","tsumogiri":false}
+{"type":"tsumo","actor":2,"pai":"7p"}
+{"type":"dahai","actor":2,"pai":"9s","tsumogiri":false}
+{"type":"tsumo","actor":0,"pai":"4p"}
+    "#;
+    let mut ps = PlayerState::from_log(0, log);
+    assert!(ps.last_cans.can_tsumo_agari);
+    assert!(ps.is_all_last);
+
+    // Scores are relative to actor 0: [self, shimocha (1), toimen/oya (2)].
+    let set_scores = |ps: &mut PlayerState, scores: [i32; 3]| {
+        ps.scores = [scores[0], scores[1], scores[2], 0];
+        ps.update_rank();
+        assert_eq!(ps.rank, 2, "actor 0 must be last in this fixture");
+    };
+
+    // Everyone stays below 40000 after the win: 西入 follows, so the win
+    // keeps the game alive and must be allowed.
+    set_scores(&mut ps, [25000, 39900, 40100]);
+    assert!(ps.rule_based_agari());
+
+    // The top player already has 40000 and the win (+5900 for a 2000-3900
+    // tsumo) cannot lift actor 0 out of last place: the game ends with
+    // actor 0 last, so decline.
+    set_scores(&mut ps, [20000, 40000, 45000]);
+    assert!(!ps.rule_based_agari());
+
+    // Top already at 40000 so the game ends, but the win (+5900) lifts
+    // actor 0 (33000 -> 38900) above the shimocha (37000 -> 35000): allowed.
+    set_scores(&mut ps, [33000, 37000, 40000]);
+    assert!(ps.rule_based_agari());
+}
+
+#[test]
+fn sanma_rule_based_agari_w3_is_hard_end() {
+    // W3 is the last possible hand of a Tenhou sanma game regardless of
+    // scores, so a win that leaves us last must be declined even when nobody
+    // reaches 40000.
+    let log = r#"
+{"type":"start_kyoku","bakaze":"W","dora_marker":"6s","kyoku":3,"honba":0,"kyotaku":0,"oya":2,"scores":[58300,7200,39500],"tehais":[["2p","2p","2p","5p","5pr","6p","6p","7p","9p","3s","5sr","8s","W"],["1p","1p","6p","7p","8p","9p","3s","4s","4s","5s","7s","E","C"],["9m","9m","1p","3p","1s","1s","3s","5s","7s","8s","9s","9s","E"]]}
+{"type":"tsumo","actor":2,"pai":"N"}
+{"type":"nukidora","actor":2,"pai":"N"}
+{"type":"tsumo","actor":2,"pai":"6s"}
+{"type":"dahai","actor":2,"pai":"9s","tsumogiri":false}
+{"type":"tsumo","actor":0,"pai":"8s"}
+{"type":"dahai","actor":0,"pai":"W","tsumogiri":false}
+{"type":"tsumo","actor":1,"pai":"F"}
+{"type":"dahai","actor":1,"pai":"E","tsumogiri":false}
+{"type":"tsumo","actor":2,"pai":"W"}
+{"type":"dahai","actor":2,"pai":"E","tsumogiri":false}
+{"type":"tsumo","actor":0,"pai":"4s"}
+{"type":"dahai","actor":0,"pai":"9p","tsumogiri":false}
+{"type":"tsumo","actor":1,"pai":"4p"}
+{"type":"dahai","actor":1,"pai":"C","tsumogiri":false}
+{"type":"tsumo","actor":2,"pai":"9s"}
+{"type":"dahai","actor":2,"pai":"W","tsumogiri":false}
+{"type":"tsumo","actor":0,"pai":"9p"}
+{"type":"dahai","actor":0,"pai":"9p","tsumogiri":true}
+{"type":"tsumo","actor":1,"pai":"2s"}
+{"type":"dahai","actor":1,"pai":"F","tsumogiri":false}
+{"type":"tsumo","actor":2,"pai":"7p"}
+{"type":"dahai","actor":2,"pai":"9s","tsumogiri":false}
+{"type":"tsumo","actor":0,"pai":"4p"}
+    "#;
+    let mut ps = PlayerState::from_log(0, log);
+    assert!(ps.last_cans.can_tsumo_agari);
+    assert!(ps.is_all_last);
+
+    ps.scores = [25000, 39900, 40100, 0];
+    ps.update_rank();
+    assert_eq!(ps.rank, 2);
+    assert!(!ps.rule_based_agari());
+
+    // W1 with the same scores is not a hard end: the win keeps 西入 going.
+    let log_w1 = log.replacen(r#""kyoku":3"#, r#""kyoku":1"#, 1);
+    let mut ps = PlayerState::from_log(0, &log_w1);
+    ps.scores = [25000, 39900, 40100, 0];
+    ps.update_rank();
+    assert_eq!(ps.rank, 2);
+    assert!(ps.rule_based_agari());
+}
