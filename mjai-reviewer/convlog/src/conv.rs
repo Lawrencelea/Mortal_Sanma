@@ -2,11 +2,9 @@ use crate::Tile;
 use crate::mjai::Event;
 use crate::t;
 use crate::tenhou::{ActionItem, EndStatus, Kyoku, Log, TenhouTile};
-use std::cell::RefCell;
 use std::collections::hash_map::Entry;
-use std::rc::Rc;
 
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -24,18 +22,29 @@ pub enum ConvertError {
     SanmaChi,
 
     #[error(
-        "illegal sanma riichi: at kyoku {kyoku} honba {honba} for actor {actor}, \
-        live wall has {tiles_left} tiles left"
+        "no physically valid event order for sanma kyoku: \
+        at kyoku {kyoku} honba {honba}"
     )]
-    IllegalSanmaRiichi {
-        kyoku: u8,
-        honba: u8,
-        actor: u8,
-        tiles_left: u8,
-    },
+    NoValidSanmaOrder { kyoku: u8, honba: u8 },
+
+    #[error(
+        "ambiguous event order for sanma kyoku: \
+        at kyoku {kyoku} honba {honba}"
+    )]
+    AmbiguousSanmaOrder { kyoku: u8, honba: u8 },
 
     #[error("insufficient dora indicators: at kyoku {kyoku} honba {honba}")]
     InsufficientDoraIndicators { kyoku: u8, honba: u8 },
+
+    #[error(
+        "{unconsumed} dora indicator(s) were never revealed by the replay: \
+        at kyoku {kyoku} honba {honba}"
+    )]
+    UnconsumedDoraIndicators {
+        kyoku: u8,
+        honba: u8,
+        unconsumed: usize,
+    },
 
     #[error(
         "insufficient take sequence size: \
@@ -97,21 +106,7 @@ pub fn tenhou_to_mjai(log: &Log) -> Result<Vec<Event>> {
 
 fn tenhou_kyoku_to_mjai_events(kyoku: &Kyoku) -> Result<Vec<Event>> {
     let num_players = kyoku.action_tables.len();
-    // First of all, transform all takes and discards to events.
-    let (take_events, discard_events): (Vec<_>, Vec<_>) = (0..num_players)
-        .map(|a| {
-            parse_takes_and_discards_to_mjai(
-                a as u8,
-                num_players,
-                &kyoku.action_tables[a as usize].takes,
-                &kyoku.action_tables[a as usize].discards,
-            )
-        })
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .unzip();
 
-    // Then emit the events in order.
     // Tenhou sanma still uses the four-player round numbering grid: E1-E3
     // are 0,1,2 and S1 starts at 4. Seat 3 is skipped, but round display and
     // dealer identity must be derived with mod/div 4.
@@ -122,44 +117,66 @@ fn tenhou_kyoku_to_mjai_events(kyoku: &Kyoku) -> Result<Vec<Event>> {
         2 => t!(W),
         _ => t!(N),
     };
+    let start_kyoku = Event::StartKyoku {
+        bakaze,
+        kyoku: kyoku.meta.kyoku_num % 4 + 1,
+        honba: kyoku.meta.honba,
+        kyotaku: kyoku.meta.kyotaku,
+        dora_marker: *kyoku
+            .dora_indicators
+            .first()
+            .ok_or(ConvertError::InsufficientDoraIndicators {
+                kyoku: kyoku.meta.kyoku_num,
+                honba: kyoku.meta.honba,
+            })?,
+        oya,
+        scores: kyoku.scoreboard.clone(),
+        tehais: kyoku
+            .action_tables
+            .iter()
+            .map(|table| table.haipai.clone())
+            .collect(),
+    };
 
     if num_players == 3 {
-        return tenhou_sanma_kyoku_to_mjai_events(
-            kyoku,
-            &take_events,
-            &discard_events,
-            oya,
-            bakaze,
-        );
+        tenhou_sanma_kyoku_to_mjai_events(kyoku, start_kyoku, oya)
+    } else {
+        tenhou_yonma_kyoku_to_mjai_events(kyoku, start_kyoku, oya)
     }
+}
 
-    let attempt = |backtracks: &mut AHashMap<Tile, BackTrack>,
-                   turn_step: usize|
-     -> Result<Vec<Event>> {
-        let mut events = vec![];
+// ---------------------------------------------------------------------------
+// Four-player conversion. This is the upstream mjai-reviewer algorithm,
+// unchanged except for the `Vec`-based log types.
+// ---------------------------------------------------------------------------
 
-        let mut dora_feed = kyoku.dora_indicators.clone().into_iter();
-        events.push(Event::StartKyoku {
-            bakaze,
-            kyoku: kyoku.meta.kyoku_num % 4 + 1,
-            honba: kyoku.meta.honba,
-            kyotaku: kyoku.meta.kyotaku,
-            dora_marker: dora_feed
-                .next()
-                .ok_or(ConvertError::InsufficientDoraIndicators {
-                    kyoku: kyoku.meta.kyoku_num,
-                    honba: kyoku.meta.honba,
-                })?,
-            oya,
-            scores: kyoku.scoreboard.clone(),
-            tehais: kyoku
-                .action_tables
-                .iter()
-                .map(|table| table.haipai.clone())
-                .collect(),
-        });
+fn tenhou_yonma_kyoku_to_mjai_events(
+    kyoku: &Kyoku,
+    start_kyoku: Event,
+    oya: u8,
+) -> Result<Vec<Event>> {
+    // First of all, transform all takes and discards to events.
+    let (take_events, discard_events): (Vec<_>, Vec<_>) = (0..4)
+        .map(|a| {
+            parse_takes_and_discards_to_mjai(
+                a,
+                4,
+                &kyoku.action_tables[a as usize].takes,
+                &kyoku.action_tables[a as usize].discards,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .unzip();
 
-        let mut discard_sets: Vec<_> = (0..num_players)
+    // Prepare for backtracks.
+    let mut backtracks = AHashMap::new();
+
+    let attempt = |backtracks: &mut AHashMap<Tile, BackTrack>| -> Result<Vec<Event>> {
+        let mut events = vec![start_kyoku.clone()];
+        let mut dora_feed = kyoku.dora_indicators.iter().copied().skip(1);
+
+        let mut discard_sets: Vec<_> = (0..4)
             .map(|a| {
                 let mut m = AHashMap::new();
                 for discard in &discard_events[a] {
@@ -170,20 +187,8 @@ fn tenhou_kyoku_to_mjai_events(kyoku: &Kyoku) -> Result<Vec<Event>> {
                 m
             })
             .collect();
-        let mut take_idxs = vec![0; num_players];
-        let mut discard_idxs = vec![0; num_players];
-        let mut pending_nukidora = vec![0; num_players];
-        let mut hand_counts: Vec<[u8; 38]> = kyoku
-            .action_tables
-            .iter()
-            .map(|table| {
-                let mut counts = [0; 38];
-                for pai in &table.haipai {
-                    counts[pai.as_usize()] += 1;
-                }
-                counts
-            })
-            .collect();
+        let mut take_idxs = [0; 4];
+        let mut discard_idxs = [0; 4];
 
         let mut reach_flag: Option<usize> = None;
         let mut last_discard = t!(?);
@@ -196,63 +201,22 @@ fn tenhou_kyoku_to_mjai_events(kyoku: &Kyoku) -> Result<Vec<Event>> {
         let mut actor = oya as usize;
 
         loop {
-            // Tenhou lists kita actions in the discard stream, including
-            // norths extracted from the initial hand. In mjai replay order, the
-            // draw/replacement draw is emitted before that nukidora. Queue the
-            // f44 here and emit it after consuming the take.
-            while matches!(
-                discard_events[actor].get(discard_idxs[actor]),
-                Some(Event::Nukidora { .. })
-            ) && !is_final_ron_target_drawn_nukidora(
-                kyoku,
-                actor,
-                discard_idxs[actor],
-                &discard_events,
-                &hand_counts,
-            ) {
-                pending_nukidora[actor] += 1;
-                discard_idxs[actor] += 1;
-            }
-
             // Start to process a take event.
-            let Some(raw_take) = take_events[actor].get(take_idxs[actor]) else {
-                if num_players == 3 {
-                    if (0..num_players).all(|a| take_idxs[a] >= take_events[a].len()) {
-                        end_kyoku(&mut events, kyoku);
-                        break;
-                    }
-                    actor = next_actor_with_take(
-                        num_players,
-                        actor,
-                        turn_step,
-                        &take_idxs,
-                        &take_events,
-                    );
-                    continue;
-                }
-                return Err(ConvertError::InsufficientTakes {
+            let take = take_events[actor].get(take_idxs[actor]).ok_or(
+                ConvertError::InsufficientTakes {
                     kyoku: kyoku.meta.kyoku_num,
                     honba: kyoku.meta.honba,
                     actor: actor as u8,
-                });
-            };
-            let mut take = raw_take.clone();
+                },
+            )?;
             take_idxs[actor] += 1;
-
-            if let Some((_, pai)) = take.naki_info() {
-                if num_players == 3 && pai == last_discard {
-                    if let Some(last_actor) = last_actor {
-                        retarget_naki(&mut take, last_actor);
-                    }
-                }
-            }
 
             if let Some((target, pai)) = take.naki_info() {
                 if pai != last_discard
                     || last_actor.is_some_and(|a| a != target || a == actor as u8)
                 {
                     return Err(ConvertError::UnexpectedNaki {
-                        action: take,
+                        action: take.clone(),
                         last_discard,
                         last_actor,
                         kyoku: kyoku.meta.kyoku_num,
@@ -269,7 +233,7 @@ fn tenhou_kyoku_to_mjai_events(kyoku: &Kyoku) -> Result<Vec<Event>> {
 
             // If the take is daiminkan, immediately consume the next take event
             // from the same actor.
-            match &take {
+            match *take {
                 Event::Daiminkan { .. } => {
                     // Not sure if this is really needed.
                     if need_new_dora_at_discard {
@@ -283,7 +247,7 @@ fn tenhou_kyoku_to_mjai_events(kyoku: &Kyoku) -> Result<Vec<Event>> {
                         });
                     }
 
-                    events.push(take);
+                    events.push(take.clone());
                     need_new_dora_at_discard = true;
                     continue;
                 }
@@ -307,52 +271,6 @@ fn tenhou_kyoku_to_mjai_events(kyoku: &Kyoku) -> Result<Vec<Event>> {
 
             // Emit the take event.
             events.push(take.clone());
-            apply_take_to_hand(&mut hand_counts[actor], &take);
-
-            if pending_nukidora[actor] > 0 && matches!(take, Event::Tsumo { .. }) {
-                hand_counts[actor][t!(N).as_usize()] =
-                    hand_counts[actor][t!(N).as_usize()].saturating_sub(1);
-                events.push(Event::Nukidora {
-                    actor: actor as u8,
-                    pai: t!(N),
-                });
-                pending_nukidora[actor] -= 1;
-                if (0..num_players).all(|a| take_idxs[a] >= take_events[a].len()) {
-                    end_kyoku(&mut events, kyoku);
-                    break;
-                }
-                continue;
-            }
-
-            if matches!(take, Event::Tsumo { pai, .. } if pai == t!(N))
-                && matches!(
-                    discard_events[actor].get(discard_idxs[actor]),
-                    Some(Event::Nukidora { .. })
-                )
-            {
-                hand_counts[actor][t!(N).as_usize()] -= 1;
-                events.push(Event::Nukidora {
-                    actor: actor as u8,
-                    pai: t!(N),
-                });
-                discard_idxs[actor] += 1;
-                if (0..num_players).all(|a| take_idxs[a] >= take_events[a].len()) {
-                    end_kyoku(&mut events, kyoku);
-                    break;
-                }
-                if is_ron_target(kyoku, actor as u8)
-                    && discard_idxs[actor] + 1 == discard_events[actor].len()
-                {
-                    actor = next_actor_with_take(
-                        num_players,
-                        actor,
-                        turn_step,
-                        &take_idxs,
-                        &take_events,
-                    );
-                }
-                continue;
-            }
 
             // Check if the kyoku ends here, can be ryukyoku (九種九牌) or tsumo.
             // Here it simply checks if there is no more discard for current actor.
@@ -402,7 +320,6 @@ fn tenhou_kyoku_to_mjai_events(kyoku: &Kyoku) -> Result<Vec<Event>> {
 
             // Emit the discard event.
             events.push(discard.clone());
-            apply_discard_to_hand(&mut hand_counts[actor], &discard);
 
             // Process reach declare.
             //
@@ -424,58 +341,16 @@ fn tenhou_kyoku_to_mjai_events(kyoku: &Kyoku) -> Result<Vec<Event>> {
                     last_discard = pai;
                     discard_sets[actor].entry(pai).and_modify(|v| *v -= 1);
                 }
-                apply_discard_to_hand(&mut hand_counts[actor], &dahai);
                 events.push(dahai);
-
-                if is_final_ron_discard(
-                    kyoku,
-                    actor as u8,
-                    &discard_idxs,
-                    &discard_events,
-                    &take_idxs,
-                    &take_events,
-                ) {
-                    end_kyoku(&mut events, kyoku);
-                    break;
-                }
-            }
-
-            if is_final_ron_discard(
-                kyoku,
-                actor as u8,
-                &discard_idxs,
-                &discard_events,
-                &take_idxs,
-                &take_events,
-            ) {
-                end_kyoku(&mut events, kyoku);
-                break;
             }
 
             // Check if the kyoku ends here, can be ryukyoku or ron.
             //
             // Here it simply checks if there is no more take for every single
             // actor.
-            if (0..num_players).all(|a| take_idxs[a] >= take_events[a].len()) {
-                if can_end_after_exhausted_takes(
-                    kyoku,
-                    actor as u8,
-                    &discard_idxs,
-                    &discard_events,
-                    &take_idxs,
-                    &take_events,
-                ) {
-                    end_kyoku(&mut events, kyoku);
-                    break;
-                }
-                return Err(ConvertError::UnexpectedNaki {
-                    action: discard,
-                    last_discard,
-                    last_actor,
-                    kyoku: kyoku.meta.kyoku_num,
-                    honba: kyoku.meta.honba,
-                    actor: actor as u8,
-                });
+            if (0..4).all(|a| take_idxs[a] >= take_events[a].len()) {
+                end_kyoku(&mut events, kyoku);
+                break;
             }
 
             // Check if the last discard was ankan or kakan.
@@ -499,9 +374,6 @@ fn tenhou_kyoku_to_mjai_events(kyoku: &Kyoku) -> Result<Vec<Event>> {
                     need_new_dora_at_discard = true;
                     continue;
                 }
-                Event::Nukidora { .. } => {
-                    continue;
-                }
                 _ => (),
             }
 
@@ -513,14 +385,14 @@ fn tenhou_kyoku_to_mjai_events(kyoku: &Kyoku) -> Result<Vec<Event>> {
             // There are some edge cases when there are multiple candidates for the
             // next actor, which will be handled by the second pass of the filter.
             last_actor = Some(actor as u8);
-            let naki_actor = (0..num_players)
+            actor = (0..4)
                 .filter(|&a| a != actor)
                 // First pass, filter the naki that takes the specific tile from the
                 // specific target.
                 .filter_map(|a| {
                     if let Some(take) = take_events[a].get(take_idxs[a]) {
                         if let Some((target, pai)) = take.naki_info() {
-                            if (num_players == 3 || target == actor as u8) && pai == last_discard {
+                            if target == (actor as u8) && pai == last_discard {
                                 return Some((a, take.naki_to_ord()));
                             }
                         }
@@ -598,975 +470,178 @@ fn tenhou_kyoku_to_mjai_events(kyoku: &Kyoku) -> Result<Vec<Event>> {
                             None
                         }
                     }
-                });
-
-            actor = naki_actor.unwrap_or_else(|| {
-                let mut next = next_turn_actor(num_players, actor, turn_step);
-                for _ in 0..num_players {
-                    // Skip actors with no remaining takes (exhausted due to uneven
-                    // pon distribution in sanma). is_some_and ensures we only pick
-                    // an actor who actually has a take available and isn't about to naki.
-                    if take_events[next]
-                        .get(take_idxs[next])
-                        .is_some_and(|event| event.naki_info().is_none())
-                    {
-                        return next;
-                    }
-                    next = next_turn_actor(num_players, next, turn_step);
-                }
-                next_turn_actor(num_players, actor, turn_step)
-            });
+                })
+                .unwrap_or((actor + 1) % 4);
         }
 
         Ok(events)
     };
 
     let mut first_error = None;
-    let mut backtracks = AHashMap::new();
     loop {
-        match attempt(&mut backtracks, 1) {
+        match attempt(&mut backtracks) {
             Ok(events) => return Ok(events),
             Err(err) => {
                 first_error = first_error.or(Some(err));
                 if backtracks.is_empty() {
-                    break;
+                    return Err(first_error.unwrap());
                 }
             }
-        }
+        };
     }
-
-    Err(first_error.unwrap())
 }
 
-#[derive(Clone)]
-struct SanmaReplayState<'a> {
-    kyoku: &'a Kyoku,
-    take_events: &'a [Vec<Event>],
-    discard_events: &'a [Vec<Event>],
-    events: Vec<Event>,
-    dora_idx: usize,
-    take_idxs: Vec<usize>,
-    discard_idxs: Vec<usize>,
-    hand_counts: Vec<[u8; 38]>,
-    meld_counts: Vec<u8>,
-    discarded_tiles: Vec<[bool; 34]>,
-    actor: usize,
-    live_wall_left: u8,
-    reach_flag: Option<usize>,
-    last_discard: Tile,
-    last_actor: Option<u8>,
-    need_new_dora_at_discard: bool,
-    need_new_dora_at_tsumo: bool,
-    riichi_accepted: [bool; 3],
-    temporary_furiten: [bool; 3],
-    riichi_furiten: [bool; 3],
-    // Branch-pruning guard for Tenhou sanma's ambiguous per-player streams.
-    // A branch that makes the eventual winner pass a kakan/nukidora ron window
-    // can later clear temporary furiten by drawing, but it is usually the wrong
-    // chronology when Tenhou's result is an ordinary ron.
-    passed_special_ron: [bool; 3],
-    failed_states: Rc<RefCell<AHashSet<SanmaReplayKey>>>,
-    steps: usize,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct SanmaReplayKey {
-    actor: usize,
-    take_idxs: [usize; 3],
-    discard_idxs: [usize; 3],
-    live_wall_left: u8,
-    reach_flag: Option<usize>,
-    last_discard: u8,
-    last_actor: Option<u8>,
-    dora_idx: usize,
-    need_new_dora_at_discard: bool,
-    need_new_dora_at_tsumo: bool,
-    riichi_accepted: [bool; 3],
-    temporary_furiten: [bool; 3],
-    riichi_furiten: [bool; 3],
-    passed_special_ron: [bool; 3],
-    discarded_tiles: [[bool; 34]; 3],
-}
-
-#[derive(Clone, Copy)]
-struct SanmaCallCandidate {
-    actor: usize,
-    take_idx: usize,
-    discard_idx: usize,
-    ord: i8,
-    original_target: u8,
-    direct_target: bool,
-    skipped_self_tsumogiri_turns: usize,
-}
-
-#[derive(Clone, Copy)]
-struct SanmaActorCandidate {
-    actor: usize,
-    take_idx: usize,
-    discard_idx: usize,
-    turn_order: usize,
-    skipped_self_tsumogiri_turns: usize,
-}
+// ---------------------------------------------------------------------------
+// Three-player conversion.
+//
+// Tenhou records one take stream and one discard stream per player. The
+// streams do not carry timing information, so the converter must interleave
+// them. The interleaving is fully determined by the physical rules of the
+// game, and nothing else is assumed:
+//
+//   * A player who is on turn draws the next item of their take stream, which
+//     must be a plain draw, then plays the next item of their discard stream.
+//   * After a discard of tile T by X, either some player Y whose next take is
+//     "call T from X" makes that call now, or X's shimocha draws. Both options
+//     are explored; declining a call is legal, but it must lead to a
+//     consistent replay of everyone's streams.
+//   * Nukidora, ankan, kakan and daiminkan are followed by a replacement draw
+//     of the same player.
+//   * The kyoku ends exactly when every stream is fully consumed and the last
+//     event is compatible with the recorded result (tsumo by the winner, or a
+//     discard-like event by the ron target).
+//
+// The search records every complete interleaving. A kyoku is converted only
+// when exactly one exists, so no guess is ever baked into the output.
+// ---------------------------------------------------------------------------
 
 fn tenhou_sanma_kyoku_to_mjai_events(
     kyoku: &Kyoku,
-    take_events: &[Vec<Event>],
-    discard_events: &[Vec<Event>],
+    start_kyoku: Event,
     oya: u8,
-    bakaze: Tile,
 ) -> Result<Vec<Event>> {
-    let dora_marker =
-        *kyoku
-            .dora_indicators
-            .first()
-            .ok_or(ConvertError::InsufficientDoraIndicators {
-                kyoku: kyoku.meta.kyoku_num,
-                honba: kyoku.meta.honba,
-            })?;
-    let events = vec![Event::StartKyoku {
-        bakaze,
-        kyoku: kyoku.meta.kyoku_num % 4 + 1,
-        honba: kyoku.meta.honba,
-        kyotaku: kyoku.meta.kyotaku,
-        dora_marker,
-        oya,
-        scores: kyoku.scoreboard.clone(),
-        tehais: kyoku
-            .action_tables
-            .iter()
-            .map(|table| table.haipai.clone())
-            .collect(),
-    }];
-    let hand_counts: Vec<[u8; 38]> = kyoku
-        .action_tables
-        .iter()
-        .map(|table| {
-            let mut counts = [0; 38];
-            for pai in &table.haipai {
-                counts[pai.as_usize()] += 1;
-            }
-            counts
-        })
-        .collect();
+    let mut takes = Vec::with_capacity(3);
+    let mut discards = Vec::with_capacity(3);
+    for (actor, table) in kyoku.action_tables.iter().enumerate() {
+        takes.push(take_action_to_events(actor as u8, 3, &table.takes)?);
+        discards.push(discard_action_to_events(actor as u8, &table.discards)?);
+    }
 
-    let state = SanmaReplayState {
+    let mut replay = SanmaReplay {
         kyoku,
-        take_events,
-        discard_events,
-        events,
+        takes: &takes,
+        discards: &discards,
+        events: vec![start_kyoku],
+        take_idxs: [0; 3],
+        discard_idxs: [0; 3],
+        last_draw: [t!(?); 3],
         dora_idx: 1,
-        take_idxs: vec![0; 3],
-        discard_idxs: vec![0; 3],
-        hand_counts,
-        meld_counts: vec![0; 3],
-        discarded_tiles: vec![[false; 34]; 3],
-        actor: oya as usize,
-        live_wall_left: 55,
-        reach_flag: None,
-        last_discard: t!(?),
-        last_actor: None,
-        need_new_dora_at_discard: false,
-        need_new_dora_at_tsumo: false,
-        riichi_accepted: [false; 3],
-        temporary_furiten: [false; 3],
-        riichi_furiten: [false; 3],
-        passed_special_ron: [false; 3],
-        failed_states: Rc::new(RefCell::new(AHashSet::new())),
-        steps: 0,
+        reach_pending: None,
+        need_dora_at_discard: false,
+        need_dora_at_tsumo: false,
+        solutions: vec![],
     };
+    replay.draw_phase(oya as usize, Last::Other)?;
 
-    run_sanma_replay(state)
-}
-
-fn run_sanma_replay(state: SanmaReplayState<'_>) -> Result<Vec<Event>> {
-    let key = state.replay_key();
-    let seen = state.failed_states.borrow().contains(&key);
-    if seen {
-        return Err(unexpected_state_error(&state, Event::None));
-    }
-
-    let failed_states = Rc::clone(&state.failed_states);
-    let result = run_sanma_replay_inner(state);
-    if result.is_err() {
-        failed_states.borrow_mut().insert(key);
-    }
-    result
-}
-
-fn run_sanma_replay_inner(mut state: SanmaReplayState<'_>) -> Result<Vec<Event>> {
-    const MAX_REPLAY_STEPS: usize = 4096;
-    state.steps += 1;
-    if state.steps > MAX_REPLAY_STEPS {
-        return Err(unexpected_state_error(&state, Event::None));
-    }
-
-    if state.take_idxs[state.actor] >= state.take_events[state.actor].len() {
-        if state.all_takes_consumed()
-            && can_end_after_exhausted_takes(
-                state.kyoku,
-                state.last_actor.unwrap_or(state.actor as u8),
-                &state.discard_idxs,
-                state.discard_events,
-                &state.take_idxs,
-                state.take_events,
-            )
-        {
-            end_kyoku(&mut state.events, state.kyoku);
-            return Ok(state.events);
-        }
-
-        if let Some(candidate) = state.normal_actor_candidates().into_iter().next() {
-            state.actor = candidate.actor;
-            state.take_idxs[candidate.actor] = candidate.take_idx;
-            state.discard_idxs[candidate.actor] = candidate.discard_idx;
-            return run_sanma_replay(state);
-        }
-
-        return Err(ConvertError::InsufficientTakes {
-            kyoku: state.kyoku.meta.kyoku_num,
-            honba: state.kyoku.meta.honba,
-            actor: state.actor as u8,
-        });
-    }
-
-    if let Some(actor) = state.reach_flag.take() {
-        state
-            .events
-            .push(Event::ReachAccepted { actor: actor as u8 });
-        state.riichi_accepted[actor] = true;
-    }
-
-    let mut take = state.take_events[state.actor][state.take_idxs[state.actor]].clone();
-    state.take_idxs[state.actor] += 1;
-    if let Some((_, pai)) = take.naki_info() {
-        if pai == state.last_discard {
-            if let Some(last_actor) = state.last_actor {
-                retarget_naki(&mut take, last_actor);
-            }
-        }
-    }
-    if let Some((target, pai)) = take.naki_info() {
-        if pai != state.last_discard
-            || state
-                .last_actor
-                .is_some_and(|a| a != target || a == state.actor as u8)
-        {
-            return Err(ConvertError::UnexpectedNaki {
-                action: take,
-                last_discard: state.last_discard,
-                last_actor: state.last_actor,
-                kyoku: state.kyoku.meta.kyoku_num,
-                honba: state.kyoku.meta.honba,
-                actor: state.actor as u8,
-            });
-        }
-    }
-
-    match &take {
-        Event::Tsumo { .. } => {
-            if state.live_wall_left == 0 {
-                return Err(unexpected_state_error(&state, take.clone()));
-            }
-            state.live_wall_left -= 1;
-        }
-        _ => (),
-    }
-
-    match &take {
-        Event::Daiminkan { .. } => {
-            if state.need_new_dora_at_discard {
-                state.push_dora()?;
-            }
-            state.apply_take(&take)?;
-            state.events.push(take);
-            state.need_new_dora_at_discard = true;
-            return run_sanma_replay(state);
-        }
-        Event::Tsumo { .. } if state.need_new_dora_at_tsumo => {
-            state.push_dora()?;
-            state.need_new_dora_at_tsumo = false;
-        }
-        _ => (),
-    }
-
-    state.apply_take(&take)?;
-    state.events.push(take);
-
-    if matches!(
-        state.discard_events[state.actor].get(state.discard_idxs[state.actor]),
-        Some(Event::Nukidora { .. })
-    ) {
-        let nukidora = state.discard_events[state.actor][state.discard_idxs[state.actor]].clone();
-        state.discard_idxs[state.actor] += 1;
-        let Event::Nukidora { pai: ron_tile, .. } = nukidora else {
-            unreachable!("matched nukidora above")
-        };
-        state.apply_discard(&nukidora)?;
-        state.events.push(nukidora);
-        if state.is_ron_moment(state.actor) {
-            if state.ron_moment_blocked_by_furiten(state.actor, ron_tile, false) {
-                return Err(unexpected_state_error(&state, Event::None));
-            }
-            end_kyoku(&mut state.events, state.kyoku);
-            return Ok(state.events);
-        }
-        return run_sanma_replay(state);
-    }
-
-    if state.discard_idxs[state.actor] >= state.discard_events[state.actor].len() {
-        if state.can_end_without_discard() {
-            end_kyoku(&mut state.events, state.kyoku);
-            return Ok(state.events);
-        }
-        return Err(ConvertError::InsufficientDiscards {
-            kyoku: state.kyoku.meta.kyoku_num,
-            honba: state.kyoku.meta.honba,
-            actor: state.actor as u8,
-        });
-    }
-
-    let discard = state.discard_events[state.actor][state.discard_idxs[state.actor]].clone();
-    state.discard_idxs[state.actor] += 1;
-    state.process_discard(discard)
-}
-
-impl SanmaReplayState<'_> {
-    fn replay_key(&self) -> SanmaReplayKey {
-        SanmaReplayKey {
-            actor: self.actor,
-            take_idxs: [self.take_idxs[0], self.take_idxs[1], self.take_idxs[2]],
-            discard_idxs: [
-                self.discard_idxs[0],
-                self.discard_idxs[1],
-                self.discard_idxs[2],
-            ],
-            live_wall_left: self.live_wall_left,
-            reach_flag: self.reach_flag,
-            last_discard: self.last_discard.as_u8(),
-            last_actor: self.last_actor,
-            dora_idx: self.dora_idx,
-            need_new_dora_at_discard: self.need_new_dora_at_discard,
-            need_new_dora_at_tsumo: self.need_new_dora_at_tsumo,
-            riichi_accepted: self.riichi_accepted,
-            temporary_furiten: self.temporary_furiten,
-            riichi_furiten: self.riichi_furiten,
-            passed_special_ron: self.passed_special_ron,
-            discarded_tiles: [
-                self.discarded_tiles[0],
-                self.discarded_tiles[1],
-                self.discarded_tiles[2],
-            ],
-        }
-    }
-
-    fn process_discard(mut self, discard: Event) -> Result<Vec<Event>> {
-        if self.need_new_dora_at_discard {
-            match discard {
-                Event::Dahai { .. } | Event::Ankan { .. } => {
-                    self.push_dora()?;
-                    self.need_new_dora_at_discard = false;
-                }
-                Event::Kakan { .. } => {
-                    self.need_new_dora_at_tsumo = true;
-                }
-                _ => (),
-            }
-        }
-
-        if let Event::Reach { .. } = discard {
-            if self.live_wall_left < 3 {
-                return Err(ConvertError::IllegalSanmaRiichi {
-                    kyoku: self.kyoku.meta.kyoku_num,
-                    honba: self.kyoku.meta.honba,
-                    actor: self.actor as u8,
-                    tiles_left: self.live_wall_left,
-                });
-            }
-            self.events.push(discard);
-            self.reach_flag = Some(self.actor);
-            let dahai = self.discard_events[self.actor]
-                .get(self.discard_idxs[self.actor])
-                .ok_or(ConvertError::InsufficientDiscards {
-                    kyoku: self.kyoku.meta.kyoku_num,
-                    honba: self.kyoku.meta.honba,
-                    actor: self.actor as u8,
-                })?
-                .clone();
-            self.discard_idxs[self.actor] += 1;
-            self.apply_discard(&dahai)?;
-            if !is_tenpai_hand_shape(&self.hand_counts[self.actor], self.meld_counts[self.actor]) {
-                return Err(unexpected_state_error(&self, dahai.clone()));
-            }
-            if let Event::Dahai { pai, .. } = dahai {
-                self.last_discard = pai;
-                self.last_actor = Some(self.actor as u8);
-            }
-            self.events.push(dahai);
-            return self.after_discard();
-        }
-
-        self.apply_discard(&discard)?;
-        match discard {
-            Event::Dahai { pai, .. } => {
-                self.last_discard = pai;
-                self.last_actor = Some(self.actor as u8);
-                self.events.push(discard);
-                self.after_discard()
-            }
-            Event::Ankan { .. } => {
-                self.events.push(discard);
-                self.push_dora()?;
-                run_sanma_replay(self)
-            }
-            Event::Kakan { pai, .. } => {
-                self.events.push(discard);
-                if self.is_ron_moment(self.actor) {
-                    if self.ron_moment_blocked_by_furiten(self.actor, pai, false) {
-                        return Err(unexpected_state_error(&self, Event::None));
-                    }
-                    end_kyoku(&mut self.events, self.kyoku);
-                    return Ok(self.events);
-                }
-                self.mark_passed_special_ron_opportunities(pai);
-                self.need_new_dora_at_discard = true;
-                run_sanma_replay(self)
-            }
-            Event::Nukidora { pai, .. } => {
-                self.events.push(discard);
-                if self.is_ron_moment(self.actor) {
-                    if self.ron_moment_blocked_by_furiten(self.actor, pai, false) {
-                        return Err(unexpected_state_error(&self, Event::None));
-                    }
-                    end_kyoku(&mut self.events, self.kyoku);
-                    return Ok(self.events);
-                }
-                self.mark_passed_special_ron_opportunities(pai);
-                run_sanma_replay(self)
-            }
-            _ => Err(unexpected_state_error(&self, discard)),
-        }
-    }
-
-    fn after_discard(mut self) -> Result<Vec<Event>> {
-        if self.is_ron_moment(self.actor) {
-            if self.ron_moment_blocked_by_furiten(self.actor, self.last_discard, true) {
-                return Err(unexpected_state_error(&self, Event::None));
-            }
-            end_kyoku(&mut self.events, self.kyoku);
-            return Ok(self.events);
-        }
-
-        self.mark_passed_discard_ron_opportunities();
-
-        if self.all_takes_consumed() {
-            if matches!(self.kyoku.end_status, EndStatus::Hora { .. }) {
-                return Err(unexpected_state_error(&self, Event::None));
-            }
-            if can_end_after_exhausted_takes(
-                self.kyoku,
-                self.actor as u8,
-                &self.discard_idxs,
-                self.discard_events,
-                &self.take_idxs,
-                self.take_events,
-            ) {
-                let mut state = self;
-                end_kyoku(&mut state.events, state.kyoku);
-                return Ok(state.events);
-            }
-            return Err(unexpected_state_error(&self, Event::None));
-        }
-
-        let call_candidates = self.call_candidates();
-        let has_future_same_discard = self.has_future_discard(self.last_discard);
-        let (retarget_now, retarget_deferred): (Vec<_>, Vec<_>) =
-            call_candidates.iter().copied().partition(|candidate| {
-                (candidate.direct_target
-                    && !(has_future_same_discard
-                        && is_ron_target(self.kyoku, candidate.actor as u8)))
-                    || !self.has_callable_future_discard_from(
-                        candidate.original_target,
-                        self.last_discard,
-                    )
-            });
-        let may_skip_call = call_candidates.is_empty()
-            || call_candidates.iter().any(|candidate| {
-                candidate.direct_target && self.has_future_discard(self.last_discard)
-            })
-            || !retarget_deferred.is_empty();
-        let mut first_error = None;
-
-        for candidate in retarget_now {
-            let mut branch = self.clone();
-            branch.actor = candidate.actor;
-            branch.take_idxs[candidate.actor] = candidate.take_idx;
-            branch.discard_idxs[candidate.actor] = candidate.discard_idx;
-            match run_sanma_replay(branch) {
-                Ok(events) => return Ok(events),
-                Err(err) => first_error = first_error.or(Some(err)),
-            }
-        }
-
-        if may_skip_call {
-            for candidate in self.normal_actor_candidates() {
-                let mut branch = self.clone();
-                branch.actor = candidate.actor;
-                branch.take_idxs[candidate.actor] = candidate.take_idx;
-                branch.discard_idxs[candidate.actor] = candidate.discard_idx;
-                match run_sanma_replay(branch) {
-                    Ok(events) => return Ok(events),
-                    Err(err) => first_error = first_error.or(Some(err)),
-                }
-            }
-        }
-
-        for candidate in retarget_deferred {
-            let mut branch = self.clone();
-            branch.actor = candidate.actor;
-            branch.take_idxs[candidate.actor] = candidate.take_idx;
-            branch.discard_idxs[candidate.actor] = candidate.discard_idx;
-            match run_sanma_replay(branch) {
-                Ok(events) => return Ok(events),
-                Err(err) => first_error = first_error.or(Some(err)),
-            }
-        }
-
-        Err(first_error.unwrap_or_else(|| unexpected_state_error(&self, Event::None)))
-    }
-
-    fn call_candidates(&self) -> Vec<SanmaCallCandidate> {
-        if self.live_wall_left == 0 {
-            return Vec::new();
-        }
-
-        let mut candidates: Vec<_> = (0..3)
-            .filter(|&actor| actor != self.actor)
-            .filter_map(|actor| self.call_candidate_for_actor(actor))
-            .collect();
-        candidates.sort_by_key(|candidate| {
-            (
-                std::cmp::Reverse(candidate.ord),
-                candidate.skipped_self_tsumogiri_turns,
-            )
-        });
-        candidates
-    }
-
-    fn call_candidate_for_actor(&self, actor: usize) -> Option<SanmaCallCandidate> {
-        let mut take_idx = self.take_idxs[actor];
-        let mut discard_idx = self.discard_idxs[actor];
-        let mut skipped_self_tsumogiri_turns = 0;
-        loop {
-            if let Some((ord, original_target, direct_target)) =
-                self.matching_naki_ord(actor, take_idx)
-            {
-                return Some(SanmaCallCandidate {
-                    actor,
-                    take_idx,
-                    discard_idx,
-                    ord,
-                    original_target,
-                    direct_target,
-                    skipped_self_tsumogiri_turns,
-                });
-            }
-
-            if !self.is_skippable_self_tsumogiri_turn(actor, take_idx, discard_idx) {
-                break;
-            }
-
-            skipped_self_tsumogiri_turns += 1;
-            take_idx += 1;
-            discard_idx += 1;
-        }
-
-        None
-    }
-
-    fn matching_naki_ord(&self, actor: usize, take_idx: usize) -> Option<(i8, u8, bool)> {
-        let mut take = self.take_events[actor].get(take_idx)?.clone();
-        let (target, pai) = take.naki_info()?;
-        if pai != self.last_discard {
-            return None;
-        }
-        let direct_target = self
-            .last_actor
-            .is_some_and(|last_actor| target == last_actor);
-        retarget_naki(&mut take, self.actor as u8);
-        take.naki_info()
-            .is_some_and(|(target, _)| target == self.actor as u8)
-            .then_some((take.naki_to_ord(), target, direct_target))
-    }
-
-    fn is_skippable_self_tsumogiri_turn(
-        &self,
-        actor: usize,
-        take_idx: usize,
-        discard_idx: usize,
-    ) -> bool {
-        // Some Tenhou sanma JSON logs leave a plain self draw/tsumogiri pair in
-        // front of a later naki that actually claims the current discard. The
-        // no-call branch would play that pair, but the call branch must consume
-        // the stream in order while not emitting the unplayed self-turn.
-        matches!(
-            (
-                self.take_events[actor].get(take_idx),
-                self.discard_events[actor].get(discard_idx),
-            ),
-            (
-                Some(Event::Tsumo { pai: tsumo, .. }),
-                Some(Event::Dahai {
-                    pai: dahai,
-                    tsumogiri: true,
-                    ..
-                }),
-            ) if tsumo == dahai
-        )
-    }
-
-    fn normal_actor_candidates(&self) -> Vec<SanmaActorCandidate> {
-        let mut candidates = Vec::new();
-        let mut next = (self.actor + 1) % 3;
-        for turn_order in 0..3 {
-            let take_idx = self.take_idxs[next];
-            let discard_idx = self.discard_idxs[next];
-            if self.take_events[next]
-                .get(take_idx)
-                .is_some_and(|event| event.naki_info().is_none())
-            {
-                candidates.push(SanmaActorCandidate {
-                    actor: next,
-                    take_idx,
-                    discard_idx,
-                    turn_order,
-                    skipped_self_tsumogiri_turns: 0,
-                });
-            }
-            next = (next + 1) % 3;
-        }
-        candidates.sort_by_key(|candidate| {
-            (
-                candidate.turn_order,
-                self.normal_candidate_causes_riichi_missed_ron(candidate),
-                candidate.skipped_self_tsumogiri_turns,
-            )
-        });
-        candidates
-    }
-
-    fn normal_candidate_causes_riichi_missed_ron(&self, candidate: &SanmaActorCandidate) -> bool {
-        let Some(Event::Dahai { pai, .. }) =
-            self.discard_events[candidate.actor].get(candidate.discard_idx)
-        else {
-            return false;
-        };
-
-        match &self.kyoku.end_status {
-            EndStatus::Hora { details } => details.iter().any(|detail| {
-                let who = detail.who as usize;
-                let target = detail.target as usize;
-                // Tsumo wins have who == target; nothing to order around.
-                if who == target {
-                    return false;
-                }
-                // Candidate is the winner or the target — not a bystander.
-                if candidate.actor == who || candidate.actor == target {
-                    return false;
-                }
-                // Bystander's discard must be the winning tile and the winner
-                // must actually be able to win on it.
-                if !is_complete_hand_shape_with_win_tile(
-                    &self.hand_counts[who],
-                    *pai,
-                    self.meld_counts[who],
-                ) {
-                    return false;
-                }
-                // Riichi winner: always deprioritise a bystander discard of the
-                // winning tile (the classic missed-ron guard).
-                if self.riichi_accepted[who] {
-                    return true;
-                }
-                // Non-riichi winner: deprioritise only when the real target still
-                // has the winning tile in their future discard stream, i.e. this
-                // bystander discard is a phantom trailing turn recorded after the
-                // ron already fired.
-                self.has_future_discard_for_actor(target, *pai)
-            }),
-            EndStatus::Ryukyoku { .. } => false,
-        }
-    }
-
-    fn has_future_discard_for_actor(&self, actor: usize, pai: Tile) -> bool {
-        self.discard_events[actor]
-            .iter()
-            .skip(self.discard_idxs[actor])
-            .any(|event| matches!(event, Event::Dahai { pai: p, .. } if *p == pai))
-    }
-
-    fn has_future_discard(&self, pai: Tile) -> bool {
-        self.discard_events
-            .iter()
-            .enumerate()
-            .any(|(actor, discards)| {
-                discards
-                    .iter()
-                    .skip(self.discard_idxs[actor])
-                    .any(|event| matches!(event, Event::Dahai { pai: p, .. } if *p == pai))
-            })
-    }
-
-    fn has_callable_future_discard_from(&self, actor: u8, pai: Tile) -> bool {
-        let actor = actor as usize;
-        if actor >= self.discard_events.len() {
-            return false;
-        }
-
-        let mut take_idx = self.take_idxs[actor];
-        let mut discard_idx = self.discard_idxs[actor];
-        let mut future_tsumos = 0;
-
-        while take_idx < self.take_events[actor].len() {
-            if matches!(self.take_events[actor][take_idx], Event::Tsumo { .. }) {
-                future_tsumos += 1;
-            }
-            take_idx += 1;
-
-            loop {
-                let Some(discard) = self.discard_events[actor].get(discard_idx) else {
-                    return false;
-                };
-                discard_idx += 1;
-
-                match discard {
-                    Event::Dahai { pai: p, .. } => {
-                        if *p == pai {
-                            return future_tsumos < self.live_wall_left;
-                        }
-                        break;
-                    }
-                    Event::Reach { .. } => continue,
-                    Event::Nukidora { .. } | Event::Ankan { .. } | Event::Kakan { .. } => break,
-                    _ => return false,
-                }
-            }
-        }
-
-        false
-    }
-
-    fn mark_passed_discard_ron_opportunities(&mut self) {
-        for actor in 0..3 {
-            if actor == self.actor {
-                continue;
-            }
-            if self.riichi_furiten[actor] || self.temporary_furiten[actor] {
-                continue;
-            }
-            if is_complete_hand_shape_with_win_tile(
-                &self.hand_counts[actor],
-                self.last_discard,
-                self.meld_counts[actor],
-            ) {
-                if self.riichi_accepted[actor] {
-                    self.riichi_furiten[actor] = true;
-                } else {
-                    self.temporary_furiten[actor] = true;
-                }
-            }
-        }
-    }
-
-    fn mark_passed_special_ron_opportunities(&mut self, win_tile: Tile) {
-        for actor in 0..3 {
-            if actor == self.actor {
-                continue;
-            }
-            if self.riichi_furiten[actor] || self.temporary_furiten[actor] {
-                continue;
-            }
-            if is_complete_hand_shape_with_win_tile(
-                &self.hand_counts[actor],
-                win_tile,
-                self.meld_counts[actor],
-            ) {
-                if self.riichi_accepted[actor] {
-                    self.riichi_furiten[actor] = true;
-                } else {
-                    self.temporary_furiten[actor] = true;
-                }
-                self.passed_special_ron[actor] = true;
-            }
-        }
-    }
-
-    fn ron_moment_blocked_by_furiten(
-        &self,
-        target_actor: usize,
-        win_tile: Tile,
-        block_temporary_furiten: bool,
-    ) -> bool {
-        match &self.kyoku.end_status {
-            EndStatus::Hora { details } => details
+    match replay.solutions.len() {
+        0 => Err(ConvertError::NoValidSanmaOrder {
+            kyoku: kyoku.meta.kyoku_num,
+            honba: kyoku.meta.honba,
+        }),
+        1 => {
+            let events = replay.solutions.pop().unwrap();
+            // Tenhou lists exactly the indicators that were revealed, so a
+            // correct replay consumes all of them. Anything left over means
+            // a dora was emitted too late (or not at all).
+            let revealed = 1 + events
                 .iter()
-                .filter(|detail| detail.target == target_actor as u8 && detail.who != detail.target)
-                .any(|detail| {
-                    let who = detail.who as usize;
-                    !is_complete_hand_shape_with_win_tile(
-                        &self.hand_counts[who],
-                        win_tile,
-                        self.meld_counts[who],
-                    ) || !self.result_yaku_timing_compatible(detail, block_temporary_furiten)
-                        || !self.result_yaku_shape_compatible(detail, win_tile)
-                        || self.is_furiten_by_own_discards(who)
-                        || self.riichi_furiten[who]
-                        || block_temporary_furiten && self.passed_special_ron[who]
-                        || block_temporary_furiten && self.temporary_furiten[who]
-                }),
-            EndStatus::Ryukyoku { .. } => false,
-        }
-    }
-
-    fn result_yaku_timing_compatible(
-        &self,
-        detail: &crate::tenhou::HoraDetail,
-        normal_discard_ron: bool,
-    ) -> bool {
-        if detail.yaku.iter().any(|yaku| yaku.contains("立直"))
-            && !self.riichi_accepted[detail.who as usize]
-        {
-            return false;
-        }
-
-        if detail.yaku.iter().any(|yaku| yaku.contains("河底")) && self.live_wall_left != 0 {
-            return false;
-        }
-
-        if detail.yaku.iter().any(|yaku| yaku.contains("槍槓")) && normal_discard_ron {
-            return false;
-        }
-
-        true
-    }
-
-    fn result_yaku_shape_compatible(
-        &self,
-        detail: &crate::tenhou::HoraDetail,
-        win_tile: Tile,
-    ) -> bool {
-        if detail.yaku.iter().any(|yaku| yaku.contains("断幺九"))
-            && !is_tanyao_shape_with_win_tile(&self.hand_counts[detail.who as usize], win_tile)
-        {
-            return false;
-        }
-
-        true
-    }
-
-    fn is_furiten_by_own_discards(&self, actor: usize) -> bool {
-        self.discarded_tiles[actor]
-            .iter()
-            .enumerate()
-            .any(|(tile_id, &discarded)| {
-                discarded
-                    && is_complete_hand_shape_with_win_tile(
-                        &self.hand_counts[actor],
-                        Tile::try_from(tile_id).expect("valid tile id"),
-                        self.meld_counts[actor],
-                    )
-            })
-    }
-
-    fn all_takes_consumed(&self) -> bool {
-        (0..3).all(|actor| self.take_idxs[actor] >= self.take_events[actor].len())
-    }
-
-    fn can_end_without_discard(&self) -> bool {
-        match &self.kyoku.end_status {
-            EndStatus::Hora { details } => details.iter().any(|detail| {
-                detail.who == self.actor as u8
-                    && detail.target == detail.who
-                    && self.result_tsumo_yaku_timing_compatible(detail)
-            }),
-            EndStatus::Ryukyoku { .. } => true,
-        }
-    }
-
-    fn result_tsumo_yaku_timing_compatible(&self, detail: &crate::tenhou::HoraDetail) -> bool {
-        if detail.yaku.iter().any(|yaku| yaku.contains("海底")) && self.live_wall_left != 0 {
-            return false;
-        }
-
-        true
-    }
-
-    fn is_ron_moment(&self, target_actor: usize) -> bool {
-        if self.discard_idxs[target_actor] < self.discard_events[target_actor].len() {
-            return false;
-        }
-        match &self.kyoku.end_status {
-            EndStatus::Hora { details } => {
-                let mut has_ron = false;
-                for detail in details
-                    .iter()
-                    .filter(|d| d.target == target_actor as u8 && d.who != d.target)
-                {
-                    has_ron = true;
-                    let who = detail.who as usize;
-                    if self.take_idxs[who] < self.take_events[who].len()
-                        && !self.has_only_trailing_phantom_winner_turns(who)
-                    {
-                        return false;
-                    }
-                }
-                has_ron
+                .filter(|event| matches!(event, Event::Dora { .. }))
+                .count();
+            if revealed < kyoku.dora_indicators.len() {
+                return Err(ConvertError::UnconsumedDoraIndicators {
+                    kyoku: kyoku.meta.kyoku_num,
+                    honba: kyoku.meta.honba,
+                    unconsumed: kyoku.dora_indicators.len() - revealed,
+                });
             }
-            EndStatus::Ryukyoku { .. } => false,
+            Ok(events)
+        }
+        _ => Err(ConvertError::AmbiguousSanmaOrder {
+            kyoku: kyoku.meta.kyoku_num,
+            honba: kyoku.meta.honba,
+        }),
+    }
+}
+
+/// What the most recent event was, for deciding whether the kyoku may end
+/// here.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Last {
+    /// A draw by this actor; only a tsumo win can follow.
+    Draw(usize),
+    /// A dahai, kakan or nukidora by this actor; only a ron on this actor can
+    /// follow.
+    Discard(usize),
+    /// Anything else; only ryukyoku can follow.
+    Other,
+}
+
+struct SanmaReplay<'a> {
+    kyoku: &'a Kyoku,
+    takes: &'a [Vec<Event>],
+    discards: &'a [Vec<Event>],
+    events: Vec<Event>,
+    take_idxs: [usize; 3],
+    discard_idxs: [usize; 3],
+    last_draw: [Tile; 3],
+    dora_idx: usize,
+    reach_pending: Option<u8>,
+    need_dora_at_discard: bool,
+    need_dora_at_tsumo: bool,
+    solutions: Vec<Vec<Event>>,
+}
+
+#[derive(Clone, Copy)]
+struct Snapshot {
+    events_len: usize,
+    take_idxs: [usize; 3],
+    discard_idxs: [usize; 3],
+    last_draw: [Tile; 3],
+    dora_idx: usize,
+    reach_pending: Option<u8>,
+    need_dora_at_discard: bool,
+    need_dora_at_tsumo: bool,
+}
+
+impl SanmaReplay<'_> {
+    const MAX_SOLUTIONS: usize = 2;
+
+    const fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            events_len: self.events.len(),
+            take_idxs: self.take_idxs,
+            discard_idxs: self.discard_idxs,
+            last_draw: self.last_draw,
+            dora_idx: self.dora_idx,
+            reach_pending: self.reach_pending,
+            need_dora_at_discard: self.need_dora_at_discard,
+            need_dora_at_tsumo: self.need_dora_at_tsumo,
         }
     }
 
-    fn has_only_trailing_phantom_winner_turns(&self, actor: usize) -> bool {
-        if !is_ron_winner(self.kyoku, actor as u8) {
-            return false;
-        }
+    fn restore(&mut self, snapshot: Snapshot) {
+        self.events.truncate(snapshot.events_len);
+        self.take_idxs = snapshot.take_idxs;
+        self.discard_idxs = snapshot.discard_idxs;
+        self.last_draw = snapshot.last_draw;
+        self.dora_idx = snapshot.dora_idx;
+        self.reach_pending = snapshot.reach_pending;
+        self.need_dora_at_discard = snapshot.need_dora_at_discard;
+        self.need_dora_at_tsumo = snapshot.need_dora_at_tsumo;
+    }
 
-        let mut take_idx = self.take_idxs[actor];
-        let mut discard_idx = self.discard_idxs[actor];
-        while take_idx < self.take_events[actor].len() {
-            if !matches!(
-                self.take_events[actor].get(take_idx),
-                Some(Event::Tsumo { .. })
-            ) {
-                return false;
-            }
-
-            loop {
-                let Some(discard) = self.discard_events[actor].get(discard_idx) else {
-                    return false;
-                };
-                discard_idx += 1;
-                match discard {
-                    // Only a tsumogiri dahai is a phantom turn — the player had no
-                    // real choice (they drew and immediately discarded the same tile).
-                    // A non-tsumogiri dahai is a genuine decision that changes game
-                    // state, so the winner's remaining stream is not purely phantom.
-                    Event::Dahai {
-                        tsumogiri: true, ..
-                    } => break,
-                    Event::Dahai {
-                        tsumogiri: false, ..
-                    } => return false,
-                    Event::Nukidora { .. } => continue,
-                    Event::Reach { .. } | Event::Ankan { .. } | Event::Kakan { .. } => {
-                        return false;
-                    }
-                    _ => return false,
-                }
-            }
-            take_idx += 1;
-        }
-
-        true
+    const fn done(&self) -> bool {
+        self.solutions.len() >= Self::MAX_SOLUTIONS
     }
 
     fn push_dora(&mut self) -> Result<()> {
@@ -1581,147 +656,243 @@ impl SanmaReplayState<'_> {
         Ok(())
     }
 
-    fn apply_take(&mut self, event: &Event) -> Result<()> {
-        if !apply_take_to_hand_checked(&mut self.hand_counts[self.actor], event) {
-            return Err(unexpected_state_error(self, event.clone()));
+    fn accept_pending_reach(&mut self) {
+        if let Some(actor) = self.reach_pending.take() {
+            self.events.push(Event::ReachAccepted { actor });
         }
-        self.temporary_furiten[self.actor] = false;
-        if matches!(event, Event::Pon { .. } | Event::Daiminkan { .. }) {
-            self.meld_counts[self.actor] += 1;
-        }
-        Ok(())
     }
 
-    fn apply_discard(&mut self, event: &Event) -> Result<()> {
-        if !apply_discard_to_hand_checked(&mut self.hand_counts[self.actor], event) {
-            return Err(unexpected_state_error(self, event.clone()));
+    fn all_consumed(&self) -> bool {
+        (0..3).all(|a| {
+            self.take_idxs[a] >= self.takes[a].len()
+                && self.discard_idxs[a] >= self.discards[a].len()
+        })
+    }
+
+    /// Record a solution if every stream is consumed and the recorded result
+    /// can follow the last event.
+    fn try_end(&mut self, last: Last) {
+        if self.done() || !self.all_consumed() {
+            return;
         }
-        if let Event::Dahai { pai, .. } = event {
-            self.discarded_tiles[self.actor][pai.deaka().as_usize()] = true;
+
+        let consistent = match &self.kyoku.end_status {
+            EndStatus::Ryukyoku { .. } => true,
+            EndStatus::Hora { details } => details.iter().all(|detail| {
+                if detail.who == detail.target {
+                    last == Last::Draw(detail.who as usize)
+                } else {
+                    last == Last::Discard(detail.target as usize)
+                }
+            }),
+        };
+        if !consistent {
+            return;
         }
-        if matches!(event, Event::Ankan { .. }) {
-            self.meld_counts[self.actor] += 1;
+
+        let mut events = self.events.clone();
+        // A riichi declared on the very last discard is still accepted by
+        // Tenhou (the 1000-point deposit is taken) when the hand then ends in
+        // any ryukyoku; only a ron on that discard cancels it.
+        if let (Some(actor), EndStatus::Ryukyoku { .. }) = (self.reach_pending, &self.kyoku.end_status) {
+            events.push(Event::ReachAccepted { actor });
         }
-        Ok(())
-    }
-}
-
-fn unexpected_state_error(state: &SanmaReplayState<'_>, action: Event) -> ConvertError {
-    ConvertError::UnexpectedNaki {
-        action,
-        last_discard: state.last_discard,
-        last_actor: state.last_actor,
-        kyoku: state.kyoku.meta.kyoku_num,
-        honba: state.kyoku.meta.honba,
-        actor: state.actor as u8,
-    }
-}
-
-fn is_final_ron_discard(
-    kyoku: &Kyoku,
-    actor: u8,
-    discard_idxs: &[usize],
-    discard_events: &[Vec<Event>],
-    take_idxs: &[usize],
-    take_events: &[Vec<Event>],
-) -> bool {
-    if discard_idxs[actor as usize] < discard_events[actor as usize].len() {
-        return false;
+        end_kyoku(&mut events, self.kyoku);
+        self.solutions.push(events);
     }
 
-    match &kyoku.end_status {
-        EndStatus::Hora { details } => details.iter().any(|detail| {
-            detail.target == actor
-                && detail.who != detail.target
-                && take_idxs[detail.who as usize] >= take_events[detail.who as usize].len()
-        }),
-        EndStatus::Ryukyoku { .. } => false,
-    }
-}
+    /// `actor` is on turn and must draw.
+    fn draw_phase(&mut self, actor: usize, last: Last) -> Result<()> {
+        if self.done() {
+            return Ok(());
+        }
 
-fn can_end_after_exhausted_takes(
-    kyoku: &Kyoku,
-    last_discard_actor: u8,
-    discard_idxs: &[usize],
-    discard_events: &[Vec<Event>],
-    take_idxs: &[usize],
-    take_events: &[Vec<Event>],
-) -> bool {
-    match &kyoku.end_status {
-        EndStatus::Ryukyoku { .. } => true,
-        EndStatus::Hora { details } => details.iter().all(|detail| {
-            if detail.who == detail.target {
-                return true;
+        let Some(take) = self.takes[actor].get(self.take_idxs[actor]) else {
+            self.try_end(last);
+            return Ok(());
+        };
+        let Event::Tsumo { pai, .. } = *take else {
+            // A call cannot happen on one's own turn.
+            return Ok(());
+        };
+        self.take_idxs[actor] += 1;
+
+        self.accept_pending_reach();
+        if self.need_dora_at_tsumo {
+            self.push_dora()?;
+            self.need_dora_at_tsumo = false;
+        }
+        self.events.push(Event::Tsumo {
+            actor: actor as u8,
+            pai,
+        });
+        self.last_draw[actor] = pai;
+
+        self.discard_phase(actor)
+    }
+
+    /// `actor` holds 14 tiles (after a draw or a pon) and must act.
+    fn discard_phase(&mut self, actor: usize) -> Result<()> {
+        if self.done() {
+            return Ok(());
+        }
+
+        let Some(item) = self.discards[actor].get(self.discard_idxs[actor]).cloned() else {
+            // No action recorded: tsumo agari or an abortive draw.
+            self.try_end(Last::Draw(actor));
+            return Ok(());
+        };
+
+        match item {
+            Event::Nukidora { .. } => {
+                self.discard_idxs[actor] += 1;
+                // Tenhou reveals a pending minkan / kakan dora once the kita
+                // passes the ron window, i.e. before the replacement draw.
+                if self.need_dora_at_discard {
+                    self.need_dora_at_discard = false;
+                    self.need_dora_at_tsumo = true;
+                }
+                self.events.push(item);
+                self.draw_phase(actor, Last::Discard(actor))
             }
-            detail.target == last_discard_actor
-                && discard_idxs[detail.target as usize]
-                    >= discard_events[detail.target as usize].len()
-                && take_idxs[detail.who as usize] >= take_events[detail.who as usize].len()
-        }),
-    }
-}
-
-fn is_ron_target(kyoku: &Kyoku, actor: u8) -> bool {
-    match &kyoku.end_status {
-        EndStatus::Hora { details } => details
-            .iter()
-            .any(|detail| detail.target == actor && detail.who != detail.target),
-        EndStatus::Ryukyoku { .. } => false,
-    }
-}
-
-fn is_ron_winner(kyoku: &Kyoku, actor: u8) -> bool {
-    match &kyoku.end_status {
-        EndStatus::Hora { details } => details
-            .iter()
-            .any(|detail| detail.who == actor && detail.who != detail.target),
-        EndStatus::Ryukyoku { .. } => false,
-    }
-}
-
-fn is_final_ron_target_drawn_nukidora(
-    kyoku: &Kyoku,
-    actor: usize,
-    discard_idx: usize,
-    discard_events: &[Vec<Event>],
-    hand_counts: &[[u8; 38]],
-) -> bool {
-    hand_counts[actor][t!(N).as_usize()] == 0
-        && is_ron_target(kyoku, actor as u8)
-        && discard_idx + 2 == discard_events[actor].len()
-        && matches!(
-            discard_events[actor].get(discard_idx),
-            Some(Event::Nukidora { .. })
-        )
-        && matches!(
-            discard_events[actor].get(discard_idx + 1),
-            Some(Event::Dahai {
-                tsumogiri: true,
-                ..
-            })
-        )
-}
-
-fn next_actor_with_take(
-    num_players: usize,
-    actor: usize,
-    turn_step: usize,
-    take_idxs: &[usize],
-    take_events: &[Vec<Event>],
-) -> usize {
-    let mut next = next_turn_actor(num_players, actor, turn_step);
-    for _ in 0..num_players {
-        if take_idxs[next] < take_events[next].len() {
-            return next;
+            Event::Ankan { .. } => {
+                self.discard_idxs[actor] += 1;
+                if self.need_dora_at_discard {
+                    self.push_dora()?;
+                    self.need_dora_at_discard = false;
+                }
+                self.events.push(item);
+                self.push_dora()?;
+                self.draw_phase(actor, Last::Other)
+            }
+            Event::Kakan { .. } => {
+                self.discard_idxs[actor] += 1;
+                // The dora of a previous minkan is still pending; chankan is
+                // possible on this kakan, so both are revealed at the next
+                // draw / discard.
+                if self.need_dora_at_discard {
+                    self.need_dora_at_tsumo = true;
+                }
+                self.need_dora_at_discard = true;
+                self.events.push(item);
+                self.draw_phase(actor, Last::Discard(actor))
+            }
+            Event::Reach { .. } => {
+                self.discard_idxs[actor] += 1;
+                self.events.push(item);
+                self.reach_pending = Some(actor as u8);
+                let dahai = self.discards[actor]
+                    .get(self.discard_idxs[actor])
+                    .cloned()
+                    .ok_or(ConvertError::InsufficientDiscards {
+                        kyoku: self.kyoku.meta.kyoku_num,
+                        honba: self.kyoku.meta.honba,
+                        actor: actor as u8,
+                    })?;
+                self.dahai(actor, dahai)
+            }
+            Event::Dahai { .. } => self.dahai(actor, item),
+            _ => Ok(()),
         }
-        next = next_turn_actor(num_players, next, turn_step);
     }
-    actor
+
+    fn dahai(&mut self, actor: usize, item: Event) -> Result<()> {
+        let Event::Dahai { pai, tsumogiri, .. } = item else {
+            return Ok(());
+        };
+        let pai = if tsumogiri { self.last_draw[actor] } else { pai };
+        if pai.is_unknown() {
+            // Either a tsumogiri with no preceding draw, or a stray daiminkan
+            // placeholder; neither is a legal continuation.
+            return Ok(());
+        }
+        self.discard_idxs[actor] += 1;
+
+        if self.need_dora_at_discard {
+            self.push_dora()?;
+            self.need_dora_at_discard = false;
+        }
+        self.events.push(Event::Dahai {
+            actor: actor as u8,
+            pai,
+            tsumogiri,
+        });
+
+        self.after_discard(actor, pai)
+    }
+
+    /// `actor` has just discarded `pai`. Explore every legal continuation.
+    fn after_discard(&mut self, actor: usize, pai: Tile) -> Result<()> {
+        let snapshot = self.snapshot();
+
+        // Option 1: someone calls the tile.
+        for caller in (0..3).filter(|&a| a != actor) {
+            if self.done() {
+                return Ok(());
+            }
+            let Some(take) = self.takes[caller].get(self.take_idxs[caller]) else {
+                continue;
+            };
+            let Some((target, called)) = take.naki_info() else {
+                continue;
+            };
+            if target != actor as u8 || called.deaka() != pai.deaka() {
+                continue;
+            }
+            let take = take.clone();
+
+            self.take_idxs[caller] += 1;
+            self.accept_pending_reach();
+            match take {
+                Event::Pon { .. } => {
+                    self.events.push(take);
+                    self.discard_phase(caller)?;
+                }
+                Event::Daiminkan { .. } => {
+                    if self.need_dora_at_discard {
+                        self.push_dora()?;
+                    }
+                    self.events.push(take);
+                    self.need_dora_at_discard = true;
+                    // Tenhou leaves a placeholder in the discard stream for
+                    // the missing discard of a daiminkan.
+                    if matches!(
+                        self.discards[caller].get(self.discard_idxs[caller]),
+                        Some(Event::Dahai { pai, tsumogiri: false, .. }) if pai.is_unknown()
+                    ) {
+                        self.discard_idxs[caller] += 1;
+                    }
+                    self.draw_phase(caller, Last::Other)?;
+                }
+                _ => (),
+            }
+            self.restore(snapshot);
+        }
+
+        if self.done() {
+            return Ok(());
+        }
+
+        // Option 2: nobody calls and the shimocha draws.
+        let shimocha = (actor + 1) % 3;
+        if matches!(
+            self.takes[shimocha].get(self.take_idxs[shimocha]),
+            Some(Event::Tsumo { .. })
+        ) {
+            self.draw_phase(shimocha, Last::Discard(actor))?;
+            self.restore(snapshot);
+        } else {
+            // Option 3: nobody can act, so the kyoku ends on this discard.
+            self.try_end(Last::Discard(actor));
+        }
+
+        Ok(())
+    }
 }
 
-const fn next_turn_actor(num_players: usize, actor: usize, turn_step: usize) -> usize {
-    (actor + turn_step) % num_players
-}
+// ---------------------------------------------------------------------------
+// Shared parsing helpers.
+// ---------------------------------------------------------------------------
 
 fn parse_takes_and_discards_to_mjai(
     actor: u8,
@@ -1736,48 +907,18 @@ fn parse_takes_and_discards_to_mjai(
     Ok((mjai_takes, mjai_discards))
 }
 
+/// Four-player only:
 /// 1. fill in possible tsumogiri pais
 /// 2. skip discards of daiminkans
 fn finalize_discards(takes: &[Event], discards: &mut Vec<Event>) {
     let mut di = 0;
-    let mut ti = 0;
-    let mut pending_nukidora = 0;
-    while ti < takes.len() {
+    for take in takes {
         if di >= discards.len() {
             break;
         }
 
         if matches!(discards[di], Event::Reach { .. }) {
             di += 1;
-        }
-
-        while matches!(discards.get(di), Some(Event::Nukidora { .. })) {
-            if !matches!(takes[ti], Event::Tsumo { pai, .. } if pai == t!(N)) {
-                pending_nukidora += 1;
-            }
-            di += 1;
-            if di >= discards.len() {
-                return;
-            }
-            if matches!(takes[ti], Event::Tsumo { pai, .. } if pai == t!(N)) {
-                ti += 1;
-                if ti >= takes.len() {
-                    return;
-                }
-            }
-        }
-
-        if matches!(discards.get(di), Some(Event::Reach { .. })) {
-            di += 1;
-            if di >= discards.len() {
-                return;
-            }
-        }
-
-        if pending_nukidora > 0 && matches!(takes[ti], Event::Tsumo { .. }) {
-            pending_nukidora -= 1;
-            ti += 1;
-            continue;
         }
 
         if let Event::Dahai {
@@ -1787,7 +928,7 @@ fn finalize_discards(takes: &[Event], discards: &mut Vec<Event>) {
         } = discards[di]
         {
             if tsumogiri {
-                if let Event::Tsumo { pai: tsumo, .. } = takes[ti] {
+                if let Event::Tsumo { pai: tsumo, .. } = *take {
                     discards[di] = Event::Dahai {
                         pai: tsumo,
                         tsumogiri,
@@ -1798,245 +939,12 @@ fn finalize_discards(takes: &[Event], discards: &mut Vec<Event>) {
                 // `take` is daiminkan, skip one discard and immediately consume
                 // the next take.
                 discards.remove(di);
-                ti += 1;
                 continue;
             }
         };
 
         di += 1;
-        ti += 1;
     }
-}
-
-fn apply_take_to_hand(hand: &mut [u8; 38], event: &Event) {
-    match event {
-        Event::Tsumo { pai, .. } => hand[pai.as_usize()] += 1,
-        Event::Pon { consumed, .. } => {
-            for pai in consumed {
-                hand[pai.as_usize()] = hand[pai.as_usize()].saturating_sub(1);
-            }
-        }
-        Event::Daiminkan { consumed, .. } => {
-            for pai in consumed {
-                hand[pai.as_usize()] = hand[pai.as_usize()].saturating_sub(1);
-            }
-        }
-        _ => (),
-    }
-}
-
-fn apply_take_to_hand_checked(hand: &mut [u8; 38], event: &Event) -> bool {
-    let mut next = *hand;
-    match event {
-        Event::Tsumo { pai, .. } => next[pai.as_usize()] += 1,
-        Event::Pon { consumed, .. } => {
-            for pai in consumed {
-                if !remove_from_hand(&mut next, *pai) {
-                    return false;
-                }
-            }
-        }
-        Event::Daiminkan { consumed, .. } => {
-            for pai in consumed {
-                if !remove_from_hand(&mut next, *pai) {
-                    return false;
-                }
-            }
-        }
-        _ => (),
-    }
-    *hand = next;
-    true
-}
-
-fn apply_discard_to_hand(hand: &mut [u8; 38], event: &Event) {
-    match event {
-        Event::Dahai { pai, .. } | Event::Kakan { pai, .. } | Event::Nukidora { pai, .. } => {
-            hand[pai.as_usize()] = hand[pai.as_usize()].saturating_sub(1);
-        }
-        Event::Ankan { consumed, .. } => {
-            for pai in consumed {
-                hand[pai.as_usize()] = hand[pai.as_usize()].saturating_sub(1);
-            }
-        }
-        _ => (),
-    }
-}
-
-fn apply_discard_to_hand_checked(hand: &mut [u8; 38], event: &Event) -> bool {
-    let mut next = *hand;
-    match event {
-        Event::Dahai { pai, .. } | Event::Kakan { pai, .. } | Event::Nukidora { pai, .. } => {
-            if !remove_from_hand(&mut next, *pai) {
-                return false;
-            }
-        }
-        Event::Ankan { consumed, .. } => {
-            for pai in consumed {
-                if !remove_from_hand(&mut next, *pai) {
-                    return false;
-                }
-            }
-        }
-        _ => (),
-    }
-    *hand = next;
-    true
-}
-
-fn remove_from_hand(hand: &mut [u8; 38], pai: Tile) -> bool {
-    let count = &mut hand[pai.as_usize()];
-    if *count == 0 {
-        return false;
-    }
-    *count -= 1;
-    true
-}
-
-fn is_complete_hand_shape_with_win_tile(hand: &[u8; 38], win_tile: Tile, meld_count: u8) -> bool {
-    if meld_count > 4 || win_tile.is_unknown() {
-        return false;
-    }
-
-    let mut counts = normalized_tile_counts(hand);
-    counts[win_tile.deaka().as_usize()] += 1;
-    let tile_count: u8 = counts.iter().sum();
-    if tile_count != 14 - meld_count * 3 {
-        return false;
-    }
-
-    if meld_count == 0 && (is_kokushi_shape(&counts) || is_chiitoitsu_shape(&counts)) {
-        return true;
-    }
-
-    is_standard_hand_shape(&mut counts, 4 - meld_count)
-}
-
-fn is_tenpai_hand_shape(hand: &[u8; 38], meld_count: u8) -> bool {
-    let counts = normalized_tile_counts(hand);
-    (0..34).any(|tile_id| {
-        counts[tile_id] < 4
-            && is_complete_hand_shape_with_win_tile(
-                hand,
-                Tile::try_from(tile_id).expect("valid tile id"),
-                meld_count,
-            )
-    })
-}
-
-fn is_tanyao_shape_with_win_tile(hand: &[u8; 38], win_tile: Tile) -> bool {
-    let mut counts = normalized_tile_counts(hand);
-    counts[win_tile.deaka().as_usize()] += 1;
-    ![
-        t!(1m),
-        t!(9m),
-        t!(1p),
-        t!(9p),
-        t!(1s),
-        t!(9s),
-        t!(E),
-        t!(S),
-        t!(W),
-        t!(N),
-        t!(P),
-        t!(F),
-        t!(C),
-    ]
-    .into_iter()
-    .any(|tile| counts[tile.as_usize()] > 0)
-}
-
-fn normalized_tile_counts(hand: &[u8; 38]) -> [u8; 34] {
-    let mut counts = [0; 34];
-    counts.copy_from_slice(&hand[..34]);
-    counts[t!(5m).as_usize()] += hand[t!(5mr).as_usize()];
-    counts[t!(5p).as_usize()] += hand[t!(5pr).as_usize()];
-    counts[t!(5s).as_usize()] += hand[t!(5sr).as_usize()];
-    counts
-}
-
-fn is_kokushi_shape(counts: &[u8; 34]) -> bool {
-    let terminals = [
-        t!(1m),
-        t!(9m),
-        t!(1p),
-        t!(9p),
-        t!(1s),
-        t!(9s),
-        t!(E),
-        t!(S),
-        t!(W),
-        t!(N),
-        t!(P),
-        t!(F),
-        t!(C),
-    ];
-    let mut has_pair = false;
-    for tile in terminals {
-        match counts[tile.as_usize()] {
-            1 => (),
-            2 if !has_pair => has_pair = true,
-            _ => return false,
-        }
-    }
-    has_pair
-}
-
-fn is_chiitoitsu_shape(counts: &[u8; 34]) -> bool {
-    counts.iter().filter(|&&count| count == 2).count() == 7
-        && counts.iter().all(|&count| count == 0 || count == 2)
-}
-
-fn is_standard_hand_shape(counts: &mut [u8; 34], melds_needed: u8) -> bool {
-    for pair in 0..34 {
-        if counts[pair] < 2 {
-            continue;
-        }
-        counts[pair] -= 2;
-        if can_remove_mentsu(counts, melds_needed) {
-            counts[pair] += 2;
-            return true;
-        }
-        counts[pair] += 2;
-    }
-    false
-}
-
-fn can_remove_mentsu(counts: &mut [u8; 34], melds_left: u8) -> bool {
-    let Some(tile) = counts.iter().position(|&count| count > 0) else {
-        return melds_left == 0;
-    };
-    if melds_left == 0 {
-        return false;
-    }
-
-    if counts[tile] >= 3 {
-        counts[tile] -= 3;
-        if can_remove_mentsu(counts, melds_left - 1) {
-            counts[tile] += 3;
-            return true;
-        }
-        counts[tile] += 3;
-    }
-
-    let suit = tile / 9;
-    let number = tile % 9;
-    if suit < 3 && number <= 6 && counts[tile + 1] > 0 && counts[tile + 2] > 0 {
-        counts[tile] -= 1;
-        counts[tile + 1] -= 1;
-        counts[tile + 2] -= 1;
-        if can_remove_mentsu(counts, melds_left - 1) {
-            counts[tile] += 1;
-            counts[tile + 1] += 1;
-            counts[tile + 2] += 1;
-            return true;
-        }
-        counts[tile] += 1;
-        counts[tile + 1] += 1;
-        counts[tile + 2] += 1;
-    }
-
-    false
 }
 
 fn take_action_to_events(
@@ -2206,7 +1114,7 @@ fn discard_action_to_events(actor: u8, discards: &[ActionItem]) -> Result<Vec<Ev
             ActionItem::Naki(naki_string) => {
                 let naki = naki_string.as_bytes();
 
-                // only ankan, kakan and reach are possible
+                // only ankan, kakan, nukidora and reach are possible
                 if let Some(idx) = naki_string.find('k') {
                     // kakan
 
@@ -2215,7 +1123,7 @@ fn discard_action_to_events(actor: u8, discards: &[ActionItem]) -> Result<Vec<Ev
                     }
 
                     let ev = match idx {
-                        // previously pon from toimen
+                        // previously pon from kamicha
                         // e.g. "k16161616" => pon 6m from kamicha then kan
                         0 => Event::Kakan {
                             actor,
@@ -2349,26 +1257,21 @@ pub fn tiles_from_tenhou_bytes(b: &[u8]) -> Result<Tile> {
 const fn relative_target(actor: u8, num_players: usize, naki_marker_idx: usize) -> u8 {
     match (num_players, naki_marker_idx) {
         (4, 0) => (actor + 3) % 4,
-        (4, 2) => (actor + 2) % 4,
         (4, 4 | 6) => (actor + 1) % 4,
         // Sanma has no N seat, but Tenhou still uses the same compact meld-string
-        // forms. Index 0 calls from kamicha (W for E, etc.). Index 2 preserves
-        // the 4-player toimen formula: (actor+2)%4, which maps E↔W and leaves S
-        // unreachable (sanma never generates idx=2 for S). Index 4/6 calls from
-        // shimocha.
+        // forms. Index 0 calls from kamicha, index 4/6 from shimocha.
         (3, 0) => (actor + 2) % 3,
-        (3, 2) => (actor + 2) % 4,
         (3, 4 | 6) => (actor + 1) % 3,
+        // Index 2 is the four-player toimen formula for both: in sanma it maps
+        // E to W and W to E, and S never produces index 2.
+        (_, 2) => (actor + 2) % 4,
         _ => actor,
     }
 }
 
-fn retarget_naki(event: &mut Event, target: u8) {
-    match event {
-        Event::Pon { target: t, .. } | Event::Daiminkan { target: t, .. } => *t = target,
-        _ => (),
-    }
-}
+// ---------------------------------------------------------------------------
+// Sanity checks on sanma output.
+// ---------------------------------------------------------------------------
 
 fn validate_sanma_mjai(events: &[Event]) -> Result<()> {
     for event in events {
@@ -2460,73 +1363,9 @@ fn validate_sanma_event_tiles(event: &Event) -> Result<()> {
     Ok(())
 }
 
-fn validate_sanma_tile(tile: Tile) -> Result<()> {
+const fn validate_sanma_tile(tile: Tile) -> Result<()> {
     match tile.as_u8() {
         1..=7 | 34 => Err(ConvertError::InvalidSanmaTile(tile)),
         _ => Ok(()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::tenhou::{HoraDetail, KyokuMeta};
-
-    fn sanma_replay_state_for_tsumo_yaku(live_wall_left: u8) -> SanmaReplayState<'static> {
-        let kyoku = Box::leak(Box::new(Kyoku {
-            meta: KyokuMeta {
-                kyoku_num: 0,
-                honba: 0,
-                kyotaku: 0,
-            },
-            scoreboard: vec![35000, 35000, 35000],
-            dora_indicators: vec![t!(1p)],
-            ura_indicators: vec![],
-            action_tables: vec![],
-            end_status: EndStatus::Ryukyoku {
-                score_deltas: vec![0, 0, 0],
-            },
-        }));
-        let take_events = Box::leak(Box::new([Vec::new(), Vec::new(), Vec::new()]));
-        let discard_events = Box::leak(Box::new([Vec::new(), Vec::new(), Vec::new()]));
-
-        SanmaReplayState {
-            kyoku,
-            take_events,
-            discard_events,
-            events: vec![],
-            dora_idx: 1,
-            take_idxs: vec![0; 3],
-            discard_idxs: vec![0; 3],
-            hand_counts: vec![[0; 38]; 3],
-            meld_counts: vec![0; 3],
-            discarded_tiles: vec![[false; 34]; 3],
-            actor: 0,
-            live_wall_left,
-            reach_flag: None,
-            last_discard: t!(?),
-            last_actor: None,
-            need_new_dora_at_discard: false,
-            need_new_dora_at_tsumo: false,
-            riichi_accepted: [false; 3],
-            temporary_furiten: [false; 3],
-            riichi_furiten: [false; 3],
-            passed_special_ron: [false; 3],
-            failed_states: Rc::new(RefCell::new(AHashSet::new())),
-            steps: 0,
-        }
-    }
-
-    #[test]
-    fn sanma_tsumo_haitei_must_consume_live_wall() {
-        let detail = HoraDetail {
-            who: 0,
-            target: 0,
-            score_deltas: vec![1500, -700, -700],
-            yaku: vec!["海底摸月(1飜)".to_owned()],
-        };
-
-        assert!(!sanma_replay_state_for_tsumo_yaku(1).result_tsumo_yaku_timing_compatible(&detail));
-        assert!(sanma_replay_state_for_tsumo_yaku(0).result_tsumo_yaku_timing_compatible(&detail));
     }
 }

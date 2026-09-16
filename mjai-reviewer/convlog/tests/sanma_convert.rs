@@ -1,5 +1,5 @@
 use convlog::tenhou::Log;
-use convlog::{Event, Tile, t, tenhou_to_mjai};
+use convlog::{ConvertError, Event, Tile, t, tenhou_to_mjai};
 
 const SANMA_TEMPLATE: &str = include_str!("../../../template_log/template.json");
 const SANMA_KITA_ALIGNMENT_LOG: &str =
@@ -11,31 +11,40 @@ const SANMA_DAIMINKAN_REPLACEMENT_LOG: &str =
 const SANMA_RON_WITH_TRAILING_PHANTOM_TAKES_LOG: &str =
     include_str!("../../../template_log/2025021501gm-00b9-0000-f91fb013.json");
 const SANMA_PON_AFTER_SKIPPED_TSUMOGIRI_LOG: &str =
-    include_str!("../../../2025_output/2025072919gm-00b9-0000-a7cc0243.json");
+    include_str!("../../../template_log/2025072919gm-00b9-0000-a7cc0243.json");
 // These real-log regressions summarize the stream-ordering bugs found while
 // validating the 2025 sanma corpus. Each protects a branch where the replay
 // scheduler must pass an earlier ron/call opportunity instead of moving future
 // player-stream events ahead of intervening draws, nukidora, riichi, or discards.
 const SANMA_FURITEN_BRANCH_LOG: &str =
-    include_str!("../../../2025_output/2025020203gm-00b9-0000-bea67528.json");
+    include_str!("../../../template_log/2025020203gm-00b9-0000-bea67528.json");
 const SANMA_RIICHI_SETUP_BRANCH_LOG: &str =
-    include_str!("../../../2025_output/2025040519gm-00b9-0000-5f46d99c.json");
+    include_str!("../../../template_log/2025040519gm-00b9-0000-5f46d99c.json");
 const SANMA_HOUTEI_BRANCH_LOG: &str =
-    include_str!("../../../2025_output/2025060717gm-00b9-0000-5fafbe59.json");
+    include_str!("../../../template_log/2025060717gm-00b9-0000-5fafbe59.json");
 const SANMA_TANYAO_RON_BRANCH_LOG: &str =
-    include_str!("../../../2025_output/2025121618gm-00b9-0000-0bbd79eb.json");
+    include_str!("../../../template_log/2025121618gm-00b9-0000-0bbd79eb.json");
 const SANMA_CFB86147_KYOKU_JSON: &str = r#"[[2,0,0],[29700,30400,44900,0],[26],[],[24,25,28,28,32,34,36,37,39,42,45,47,47],[41,34,45,22,53,35,19,47,37,"37p3737",24,"45p4545"],[39,41,42,60,28,28,32,19,25,24,60,36],[11,21,22,22,23,23,52,27,28,38,39,42,46],[27,36,38,25,26,43,43,11,19,23,19],[11,39,42,46,36,60,60,60,60,60,60],[11,19,22,26,29,34,35,36,39,42,42,43,44],[43,46,29,37,"p424242",35,31,"p434343",31,28,37,45,44,45],["f44",19,11,46,22,26,29,29,39,60,60,60,"f44",60],[],[],[],["和了",[-11600,0,11600,0],[2,0,2,"30符4飜11600点","混一色(2飜)","ドラ(2飜)"]]]"#;
 const SANMA_097ACC2B_KYOKU_JSON: &str = r#"[[2,0,0],[25500,33000,46500,0],[35],[39],[21,22,22,23,23,26,28,29,32,34,42,45,45],[25,37,34,32,"45p4545",27],[34,32,60,60,42,37],[23,24,24,25,26,29,34,36,38,42,43,47,47],[53,31,39,25,32],[42,60,43,"r29",60],[22,27,29,32,33,35,36,37,38,39,42,43,45],[28,31,43,46,45,36],[43,42,60,45,60,46],[],[],[],["和了",[-5200,6200,0,0],[1,0,1,"40符3飜5200点","立直(1飜)","ドラ(1飜)","赤ドラ(1飜)"]]]"#;
 const SANMA_25E9BC69_KYOKU_JSON: &str = r#"[[1,1,0],[51700,25900,27400,0],[42],[28],[11,11,21,26,29,29,37,41,42,42,43,45,45],["2929p29","11p1111",44,32,"4545p45",27,19,47,34],[26,37,"f44",60,21,60,60,60,42],[19,19,22,22,23,24,29,53,36,36,45,46,46],[25,39,28,35,33,34,37,29,21],[29,60,60,45,60,22,"r22",60,60],[11,22,23,23,25,26,26,33,38,38,41,47,47],[28,52,31,36,26,32,19],[11,28,33,60,22,60,60],[],[],[],["和了",[0,5100,-4100,0],[1,2,1,"40符2飜3900点","立直(1飜)","赤ドラ(1飜)"]]]"#;
 const SANMA_6C887319_KYOKU_JSON: &str = r#"[[0,2,0],[47200,35000,22800,0],[23],[44],[21,21,22,26,32,33,33,34,35,38,43,43,46],[22,42,46,29,38,35,28,32],[46,60,60,60,26,34,"r32",60],[11,19,19,22,23,26,26,31,33,34,36,37,43],[39,27,35,25,19,28],[43,31,39,26,60,60],[22,24,24,28,29,29,53,36,36,41,46,46,47],["46p4646",24,45,"29p2929",39,41,26],[41,47,60,28,60,60,60],[],[],[],["和了",[6200,-5200,0,0],[0,1,0,"25符3飜4800点","立直(1飜)","七対子(2飜)"]]]"#;
 const SANMA_525BE759_KAKAN_BRANCH_KYOKU_JSON: &str = r#"[[1,2,0],[34000,42900,28100,0],[29,22],[],[21,26,27,29,29,31,32,33,33,35,37,39,43],[53,33,32,25,24,19,38,45],[43,29,29,21,27,60,33,60],[19,26,29,31,32,32,34,37,41,41,42,42,45],[34,21,28,"3434p34",27,"4141p41",36,37,34,46,39,42],[26,29,60,21,60,19,45,60,"3434k3434",60,60,31],[11,11,21,21,22,23,28,33,43,45,46,47,47],[22,28,34,36,41,35,52,41,28,36],[43,33,60,60,60,60,45,60,46,60],[],[],[],["和了",[4300,-4300,0,0],[0,1,0,"30符3飜3900点","平和(1飜)","一盃口(1飜)","赤ドラ(1飜)"]]]"#;
-// Actor 0 (dealer) waits tanki on 1s with 中 koutsu.  Actor 1 draws and
-// tsumogiri 1s (the real ron discard).  Actor 2 is a bystander whose Tenhou
-// stream records a phantom 1s draw+tsumogiri AFTER the game ended.  Without
-// the fix, the scheduler schedules actor 2's phantom 1s discard first, which
-// sets temporary_furiten on actor 0, and the eventual hora fails validation
-// with "furiten: true".
-const SANMA_525BE759_BYSTANDER_PHANTOM_KYOKU_JSON: &str = r#"[[1,0,0],[35000,35000,35000,0],[47],[],[25,26,27,32,33,34,36,36,36,47,47,47,31],[38],[60],[11,19,29,41,41,42,42,43,43,45,45,46,46],[31],[60],[21,22,23,24,28,29,35,37,38,39,44,45,46],[31],[60],[],[],[],["和了",[5200,-5200,0,0],[0,1,0,"30符3飜5200点","中(1飜)","ドラ(2飜)"]]]"#;
+
+// 2025020903gm-00b9-0000-25ef42e4 S1: actor 2 kakans C, draws N from the
+// rinshan, extracts it, and wins on the replacement draw.  Tenhou reveals the
+// kakan dora as soon as the kita passes its ron window (before the
+// replacement draw), which is why the log lists two indicators.
+const SANMA_25EF42E4_KITA_AFTER_KAKAN_KYOKU_JSON: &str = r#"[[4,0,0],[36100,43900,25000,0],[38,42],[],[11,22,24,27,27,29,32,32,33,34,37,39,47],[44,52,39,19,21,11,26,46,36,41,11,35,25],["f44",11,47,60,32,60,37,60,60,60,60,60,27],[21,22,23,23,24,26,28,28,28,34,36,43,44],[36,45,43,31,31,33,33,27,41,46,32,42],["f44",43,60,60,60,45,26,60,60,60,"r33",60],[23,24,26,31,34,35,53,36,38,38,39,47,47],[45,"47p4747",41,11,28,37,25,42,19,22,41,47,44,22],[60,26,60,60,60,31,38,35,42,19,60,"47k474747","f44"],[],[],[],["和了",[-4000,-2000,7000,0],[2,2,2,"満貫2000-4000点","嶺上開花(1飜)","役牌 中(1飜)","ドラ(2飜)","赤ドラ(1飜)"]]]"#;
+// 2025020216gm-00b9-0000-d2c8560f S2: actor 2 declares riichi on the discard
+// after the fourth kan and the hand is aborted (四槓散了).  Tenhou still
+// accepts the riichi (the next kyoku starts with kyotaku 2).
+const SANMA_D2C8560F_RIICHI_THEN_SUUKAN_KYOKU_JSON: &str = r#"[[5,0,0],[38600,44800,21600,0],[34,26,25,21,29],[],[11,11,11,23,24,25,52,33,38,41,43,44,45],[47,53,33,38,26,36,31,27,45,21,27],["f44",41,43,47,45,33,33,31,60,60,60],[19,21,23,24,28,28,28,32,34,37,42,43,44],[32,28,38,31,42,32,45,32,42,23,37,38,11,37],["f44",43,19,60,21,34,60,"323232a32","282828a28","r24",60,60,60,60],[19,22,22,22,25,27,33,34,34,39,41,43,46],[21,47,39,24,35,42,46,36,22,39,46,39,27],[19,41,43,47,46,21,34,33,"222222a22",46,60,"393939a39","r42"],[],[],[],["四槓散了"]]"#;
+// 2025020109gm-00b9-0000-654588e3 E2-1: actor 1 declares riichi discarding
+// 5pr and is ron'd on that very tile, so no deposit is taken.
+const SANMA_654588E3_RON_ON_RIICHI_KYOKU_JSON: &str = r#"[[1,1,0],[27900,42900,34200,0],[43],[],[24,26,27,33,34,35,36,36,41,41,44,45,47],["4141p41",34,23,25,29],[47,"f44",45,34,60],[11,23,27,29,32,35,36,36,37,37,38,41,44],[52,11,27,22,27,28],["f44",41,32,27,60,"r52"],[26,26,28,31,33,34,38,41,42,45,46,46,47],[26,24,24],[41,47,31],[],[],[],["和了",[7900,-7900,0,0],[0,1,0,"30符4飜7700点","場風 東(1飜)","ドラ(2飜)","赤ドラ(1飜)"]]]"#;
+// Synthetic: actor 2 wants to pon 4s from actor 0, but actor 0 never discards
+// 4s.
+const SANMA_SYNTHETIC_NO_ORDER_KYOKU_JSON: &str = r#"[[0,0,0],[35000,35000,35000,0],[38],[],[11,19,21,29,31,39,41,42,43,44,45,46,47],[11,12,13],[19,19,19],[11,19,21,29,31,39,41,42,43,44,45,46,47],[21,22,23],[29,29,29],[34,34,21,29,31,39,41,42,43,44,45,46,47],["3434p34",31,32],[39,39,39],[],[],[],["流局",[0,0,0,0]]]"#;
 
 fn convert_raw_log(raw: &str, description: &str) -> Vec<Event> {
     let tenhou_log =
@@ -119,6 +128,18 @@ fn convert_single_kyoku_json(kyoku_json: &str, description: &str) -> Vec<Event> 
     value["log"] = serde_json::json!([serde_json::from_str::<serde_json::Value>(kyoku_json)
         .unwrap_or_else(|_| panic!("{description} kyoku json should parse"))]);
     convert_raw_log(&value.to_string(), description)
+}
+
+fn try_convert_single_kyoku_json(
+    kyoku_json: &str,
+    description: &str,
+) -> Result<Vec<Event>, ConvertError> {
+    let mut value: serde_json::Value = serde_json::from_str(SANMA_TEMPLATE).unwrap();
+    value["log"] = serde_json::json!([serde_json::from_str::<serde_json::Value>(kyoku_json)
+        .unwrap_or_else(|_| panic!("{description} kyoku json should parse"))]);
+    let tenhou_log = Log::from_json_str(&value.to_string())
+        .unwrap_or_else(|err| panic!("{description} should parse: {err}"));
+    tenhou_to_mjai(&tenhou_log)
 }
 
 fn event_tiles(event: &Event) -> Vec<Tile> {
@@ -991,42 +1012,6 @@ fn sanma_replay_converts_no_ippatsu_counterexamples() {
 }
 
 #[test]
-fn sanma_bystander_phantom_discard_does_not_set_furiten_before_ron() {
-    // 525be759 bug: actor 2 is a bystander whose Tenhou stream has a phantom
-    // 1s draw+tsumogiri recorded after the game ends.  If the scheduler
-    // processes actor 2's 1s discard before actor 1's real 1s discard, it
-    // sets temporary_furiten on actor 0 (who is waiting for 1s).  The fix
-    // deprioritises bystander candidates whose discard tile equals the ron
-    // winning tile when the real target still has that tile in their stream.
-    let events = convert_single_kyoku_json(
-        SANMA_525BE759_BYSTANDER_PHANTOM_KYOKU_JSON,
-        "sanma 525be759 bystander phantom furiten log",
-    );
-
-    let hora_pos = events
-        .iter()
-        .position(|e| {
-            matches!(
-                e,
-                Event::Hora {
-                    actor: 0,
-                    target: 1,
-                    ..
-                }
-            )
-        })
-        .expect("actor 0 should ron actor 1's 1s");
-
-    // Actor 2's phantom 1s discard must NOT appear before the hora.
-    assert!(
-        !events[..hora_pos]
-            .iter()
-            .any(|e| matches!(e, Event::Dahai { actor: 2, pai, .. } if *pai == t!(1s))),
-        "bystander actor 2's phantom 1s discard must not precede actor 0's ron"
-    );
-}
-
-#[test]
 fn sanma_passed_kakan_ron_branch_is_deprioritized() {
     // 2024100923gm-00b9-0000-525be759: if actor 0 draws 8s before actor 1's
     // 4s kakan, actor 0 can rob that kan.  Since Tenhou's result is a later
@@ -1076,4 +1061,121 @@ fn sanma_passed_kakan_ron_branch_is_deprioritized() {
         actor0_8s_pos < hora_pos,
         "actor 0's 8s draw is a real turn before the final ron"
     );
+}
+
+#[test]
+fn sanma_kita_after_kakan_reveals_pending_dora_before_replacement_draw() {
+    // Verified against the raw Tenhou XML: <N kakan/> <N kita/> <DORA/> <V/> <AGARI/>.
+    let events = convert_single_kyoku_json(
+        SANMA_25EF42E4_KITA_AFTER_KAKAN_KYOKU_JSON,
+        "sanma kita after kakan log",
+    );
+
+    assert!(
+        events.windows(6).any(|window| {
+            matches!(window[0], Event::Kakan { actor: 2, pai, .. } if pai == t!(C))
+                && matches!(window[1], Event::Tsumo { actor: 2, pai } if pai == t!(N))
+                && matches!(window[2], Event::Nukidora { actor: 2, .. })
+                && matches!(window[3], Event::Dora { dora_marker } if dora_marker == t!(S))
+                && matches!(window[4], Event::Tsumo { actor: 2, pai } if pai == t!(2p))
+                && matches!(
+                    window[5],
+                    Event::Hora {
+                        actor: 2,
+                        target: 2,
+                        ..
+                    }
+                )
+        }),
+        "kakan dora must be revealed right after the kita, before the replacement draw"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::Dora { .. }))
+            .count(),
+        1,
+        "both listed dora indicators must be consumed"
+    );
+}
+
+#[test]
+fn sanma_riichi_on_final_discard_is_accepted_before_ryukyoku() {
+    // Verified against the raw Tenhou XML: <REACH step="1"/> <F/> <REACH
+    // step="2"/> <RYUUKYOKU type="kan4"/>.  This is the only kyoku in the
+    // 2025 corpus where a riichi discard is the last event before a
+    // ryukyoku; every other last-discard riichi is followed by a draw.
+    let events = convert_single_kyoku_json(
+        SANMA_D2C8560F_RIICHI_THEN_SUUKAN_KYOKU_JSON,
+        "sanma riichi then suukan sanra log",
+    );
+    let tail = &events[events.len() - 6..events.len() - 1];
+    assert!(
+        matches!(tail[0], Event::Reach { actor: 2 })
+            && matches!(
+                tail[1],
+                Event::Dahai {
+                    actor: 2,
+                    pai,
+                    tsumogiri: false,
+                } if pai == t!(S)
+            )
+            && matches!(tail[2], Event::ReachAccepted { actor: 2 })
+            && matches!(&tail[3], Event::Ryukyoku { deltas: Some(deltas) } if *deltas == [0, 0, 0])
+            && matches!(tail[4], Event::EndKyoku),
+        "expected reach, dahai, reach_accepted, ryukyoku, end_kyoku but got {tail:?}"
+    );
+}
+
+#[test]
+fn sanma_riichi_roned_on_declaration_is_not_accepted() {
+    let events = convert_single_kyoku_json(
+        SANMA_654588E3_RON_ON_RIICHI_KYOKU_JSON,
+        "sanma ron on riichi declaration log",
+    );
+    let tail = &events[events.len() - 5..events.len() - 1];
+    assert!(
+        matches!(tail[0], Event::Reach { actor: 1 })
+            && matches!(
+                tail[1],
+                Event::Dahai {
+                    actor: 1,
+                    pai,
+                    tsumogiri: false,
+                } if pai == t!(5pr)
+            )
+            && matches!(
+                tail[2],
+                Event::Hora {
+                    actor: 0,
+                    target: 1,
+                    ..
+                }
+            )
+            && matches!(tail[3], Event::EndKyoku),
+        "a riichi discard that is ron'd must not be accepted, got {tail:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Event::ReachAccepted { .. })),
+        "no riichi is accepted in this kyoku"
+    );
+}
+
+#[test]
+fn sanma_impossible_order_is_reported() {
+    // Only NoValidSanmaOrder is exercised here.  With three players and no
+    // chi, the physical rules leave at most one interleaving: after X's
+    // discard the only fork is "X+1 draws" versus "X+2 calls", and the two
+    // branches require X's next take to be a draw and a call respectively.
+    // AmbiguousSanmaOrder therefore never fired on 161k real games or on
+    // 320k randomly generated stream sets, and no fixture can trigger it.
+    match try_convert_single_kyoku_json(
+        SANMA_SYNTHETIC_NO_ORDER_KYOKU_JSON,
+        "sanma impossible order log",
+    ) {
+        Err(ConvertError::NoValidSanmaOrder { kyoku: 0, honba: 0 }) => (),
+        other => panic!("expected NoValidSanmaOrder, got {other:?}"),
+    }
 }

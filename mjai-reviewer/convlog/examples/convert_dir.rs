@@ -1,7 +1,7 @@
 use std::env;
 use std::error::Error;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
 
@@ -85,12 +85,13 @@ fn convert_one(path: &Path, output_dir: &Path) -> Result<usize, String> {
         .ok_or_else(|| "missing file stem".to_owned())?
         .to_string_lossy();
     let out_path: PathBuf = output_dir.join(format!("{stem}.jsonl"));
-    let mut out = fs::File::create(out_path).map_err(|err| format!("create failed: {err}"))?;
+    let mut out = BufWriter::new(fs::File::create(out_path).map_err(|err| format!("create failed: {err}"))?);
     for event in &mjai_events {
         serde_json::to_writer(&mut out, event).map_err(|err| format!("write failed: {err}"))?;
         out.write_all(b"\n")
             .map_err(|err| format!("write failed: {err}"))?;
     }
 
+    out.flush().map_err(|err| format!("write failed: {err}"))?;
     Ok(mjai_events.len())
 }
